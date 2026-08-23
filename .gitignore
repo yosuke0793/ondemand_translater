@@ -158,6 +158,26 @@ ENV/
 env.bak/
 venv.bak/
 
+# Translate Service runtime data
+**/data/
+**/uploads/
+**/downloads/
+**/jobs/
+**/logs/
+**/queue/
+**/processing/
+**/done/
+**/error/
+**/status/
+**/*.db
+**/*.mp4
+
+# Local application builds and archived files
+trashbin/
+mac/TranslateService.app/
+win/dist/
+win/build/
+
 # Spyder project settings
 .spyderproject
 .spyproject
