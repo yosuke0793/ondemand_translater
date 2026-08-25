@@ -232,9 +232,9 @@ def ensure_python_dependencies(translation_backend: str, video_text_overlay: boo
 
 def main(argv: list[str] | None = None) -> int:
     current_platform = platform.system()
-    if current_platform not in {"Darwin", "Linux"}:
+    if current_platform not in {"Darwin", "Linux", "Windows"}:
         print(
-            f"この PoC は macOS / Linux 対応です。現在の OS: {current_platform}",
+            f"この PoC は macOS / Linux / Windows 対応です。現在の OS: {current_platform}",
             file=sys.stderr,
         )
         return 1
