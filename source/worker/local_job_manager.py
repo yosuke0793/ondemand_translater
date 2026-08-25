@@ -340,6 +340,11 @@ class LocalJobManager:
             if output_path != local_output.resolve():
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(local_output, output_path)
+            # Copy SRT file for cross-platform compatibility (Mac/Windows)
+            srt_path = job_dir / "en_aligned.srt"
+            if srt_path.exists():
+                output_srt_path = output_path.parent / f"{output_path.stem}.srt"
+                shutil.copy2(srt_path, output_srt_path)
             self._move_job_file(job_id, self.done_dir)
             self._update_status(
                 job_id,
