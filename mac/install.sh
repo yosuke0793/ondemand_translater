@@ -49,22 +49,39 @@ PYTHON="${TRANSLATE_PYTHON:-}"
 if [[ -z "$PYTHON" ]]; then
   for candidate in python3.10 python3.11 python3.12 python3.13; do
     if command -v "$candidate" >/dev/null 2>&1; then
-      version="$($candidate -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-      case "$version" in
-        3.10|3.11|3.12|3.13) PYTHON="$(command -v "$candidate")"; break ;;
-      esac
+      if version="$($candidate -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)"; then
+        case "$version" in
+          3.10|3.11|3.12|3.13) PYTHON="$(command -v "$candidate")"; break ;;
+        esac
+      fi
     fi
   done
 fi
 if [[ -z "$PYTHON" ]]; then
-  echo "[setup] installing Python 3.10"
-  brew install python@3.10
-  PYTHON="$BREW_PREFIX/opt/python@3.10/bin/python3.10"
+  for fallback_version in 3.12 3.10; do
+    echo "[setup] installing Python $fallback_version"
+    if brew install "python@$fallback_version"; then
+      fallback_python="$BREW_PREFIX/opt/python@$fallback_version/bin/python$fallback_version"
+      if [[ -x "$fallback_python" ]]; then
+        PYTHON="$fallback_python"
+        break
+      fi
+    fi
+  done
+fi
+if [[ -z "$PYTHON" ]]; then
+  echo "ERROR: Python 3.12 or 3.10 could not be installed." >&2
+  exit 1
 fi
 if ! "$PYTHON" -c 'import tkinter' >/dev/null 2>&1; then
-  echo "ERROR: $PYTHON does not include tkinter." >&2
-  echo "Install a Python distribution with Tk support, then rerun install.command." >&2
-  exit 1
+  python_minor="$($PYTHON -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+  echo "[setup] installing Tk support for Python $python_minor"
+  brew install "python-tk@$python_minor"
+  if ! "$PYTHON" -c 'import tkinter' >/dev/null 2>&1; then
+    echo "ERROR: $PYTHON does not include tkinter." >&2
+    echo "Install a Python distribution with Tk support, then rerun install.command." >&2
+    exit 1
+  fi
 fi
 
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then

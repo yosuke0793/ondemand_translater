@@ -45,13 +45,22 @@ function Find-Python {
 
 $python = Find-Python
 if (-not $python) {
-    Write-Host "[setup] Installing Python 3.10..."
-    & $winget.Source install --id Python.Python.3.10 --exact --accept-source-agreements --accept-package-agreements
-    $env:Path = "$env:LOCALAPPDATA\Programs\Python\Python310;$env:LOCALAPPDATA\Programs\Python\Python310\Scripts;$env:Path"
-    $python = Find-Python
+    foreach ($fallbackVersion in @("3.12", "3.10")) {
+        Write-Host "[setup] Installing Python $fallbackVersion..."
+        $pythonTag = $fallbackVersion.Replace(".", "")
+        & $winget.Source install --id "Python.Python.$fallbackVersion" --exact --accept-source-agreements --accept-package-agreements
+        if ($LASTEXITCODE -ne 0) {
+            continue
+        }
+        $env:Path = "$env:LOCALAPPDATA\Programs\Python\Python$pythonTag;$env:LOCALAPPDATA\Programs\Python\Python$pythonTag\Scripts;$env:Path"
+        $python = Find-Python
+        if ($python) {
+            break
+        }
+    }
 }
 if (-not $python) {
-    Fail "Python 3.10-3.13 was not found after installation. Open a new PowerShell and run install.ps1 again."
+    Fail "Python 3.12 or 3.10 could not be found after installation. Open a new PowerShell and run install.ps1 again."
 }
 
 $ffmpeg = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue

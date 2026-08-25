@@ -175,7 +175,8 @@ class LocalJobManager:
             command.append("--burn-subs")
         else:
             command.extend(["--embed-subs", "--embed-subs-container", "mp4"])
-        if options.get("force", True):
+        has_resume_input = (job_dir / "jp.srt").exists() or (job_dir / "en.srt").exists()
+        if options.get("force", True) and not has_resume_input:
             command.append("--force")
         return command
 
@@ -195,6 +196,8 @@ class LocalJobManager:
         glossary_text: str = "",
         options: dict | None = None,
         output_directory: Path | None = None,
+        japanese_srt: Path | None = None,
+        english_srt: Path | None = None,
     ) -> str:
         source = Path(input_video).expanduser().resolve()
         if not source.is_file():
@@ -202,10 +205,19 @@ class LocalJobManager:
         if source.suffix.lower() != ".mp4":
             raise ValueError("mp4ファイルのみ対応しています")
 
+        japanese_source = self._validate_srt_source(japanese_srt, "日本語SRT")
+        english_source = self._validate_srt_source(english_srt, "英語SRT")
+
         job_id = str(uuid.uuid4())
         job_dir = self.jobs_dir / job_id
         job_dir.mkdir(parents=True, exist_ok=False)
         shutil.copy2(source, job_dir / "input.mp4")
+        if japanese_source is not None:
+            shutil.copy2(japanese_source, job_dir / "jp.srt")
+        if english_source is not None:
+            shutil.copy2(english_source, job_dir / "en.srt")
+        if english_source is not None and japanese_source is None:
+            (job_dir / "jp.srt").write_text("", encoding="utf-8")
         destination_dir = Path(output_directory).expanduser().resolve() if output_directory else job_dir
         destination_dir.mkdir(parents=True, exist_ok=True)
         output_path = destination_dir / f"{source.stem}_translated.mp4"
@@ -233,6 +245,17 @@ class LocalJobManager:
             connection.commit()
         self._wake_event.set()
         return job_id
+
+    @staticmethod
+    def _validate_srt_source(path: Path | None, label: str) -> Path | None:
+        if path is None or not str(path).strip():
+            return None
+        source = Path(path).expanduser().resolve()
+        if not source.is_file():
+            raise FileNotFoundError(f"{label}が見つかりません: {source}")
+        if source.suffix.lower() != ".srt":
+            raise ValueError(f"{label}は.srtファイルを指定してください")
+        return source
 
     def start(self) -> None:
         with self._lock:
@@ -345,6 +368,10 @@ class LocalJobManager:
             if srt_path.exists():
                 output_srt_path = output_path.parent / f"{output_path.stem}.srt"
                 shutil.copy2(srt_path, output_srt_path)
+            jp_srt_path = job_dir / "jp.srt"
+            if jp_srt_path.exists():
+                output_jp_srt_path = output_path.parent / f"{output_path.stem}_ja.srt"
+                shutil.copy2(jp_srt_path, output_jp_srt_path)
             self._move_job_file(job_id, self.done_dir)
             self._update_status(
                 job_id,

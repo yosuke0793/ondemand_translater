@@ -8,7 +8,16 @@ import unittest
 from pathlib import Path
 
 from local_job_manager import LocalJobManager
-from standalone_app import DEFAULT_VOICE_LABEL, VOICE_OPTIONS, load_preferences, save_preferences
+from standalone_app import (
+    DEFAULT_VOICE_LABEL,
+    DEFAULT_GLOSSARY_PATH,
+    VOICE_OPTIONS,
+    load_preferences,
+    merge_glossary_terms,
+    read_glossary_csv,
+    save_preferences,
+    write_glossary_csv,
+)
 
 
 class LocalJobManagerTests(unittest.TestCase):
@@ -26,6 +35,23 @@ class LocalJobManagerTests(unittest.TestCase):
             save_preferences(preferences_path, preferences)
             self.assertEqual(load_preferences(preferences_path), preferences)
 
+    def test_glossary_csv_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            glossary_path = Path(temporary_dir) / "terms.csv"
+            terms = ["有限要素法", "ヤコビアン", "Δ"]
+            write_glossary_csv(glossary_path, terms)
+            self.assertEqual(read_glossary_csv(glossary_path), terms)
+
+    def test_default_engineering_glossary_has_expected_categories(self) -> None:
+        terms = read_glossary_csv(DEFAULT_GLOSSARY_PATH)
+        self.assertGreaterEqual(len(terms), 800)
+
+    def test_glossary_terms_are_accumulated_without_duplicates(self) -> None:
+        self.assertEqual(
+            merge_glossary_terms(["行列", "ベクトル"], ["ベクトル", "ヤコビアン", "ヤコビアン"]),
+            ["行列", "ベクトル", "ヤコビアン"],
+        )
+
     def wait_for_status(self, manager: LocalJobManager, job_id: str, expected: str) -> dict:
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
@@ -41,9 +67,18 @@ class LocalJobManagerTests(unittest.TestCase):
                 "import pathlib, sys, time; "
                 "time.sleep(0.1); "
                 + ("pathlib.Path(sys.argv[1]).write_bytes(b'video'); " if succeed else "")
+                + ("pathlib.Path(sys.argv[2]).write_text('1\\n00:00:00,000 --> 00:00:01,000\\nEnglish\\n'); " if succeed else "")
+                + ("pathlib.Path(sys.argv[3]).write_text('1\\n00:00:00,000 --> 00:00:01,000\\n日本語\\n'); " if succeed else "")
                 + ("sys.exit(0)" if succeed else "sys.exit(1)")
             )
-            return [sys.executable, "-c", script, str(job_dir / "final.mp4")]
+            return [
+                sys.executable,
+                "-c",
+                script,
+                str(job_dir / "final.mp4"),
+                str(job_dir / "en_aligned.srt"),
+                str(job_dir / "jp.srt"),
+            ]
 
         return LocalJobManager(root, command_builder=command_builder, poll_interval=0.05)
 
@@ -66,6 +101,8 @@ class LocalJobManagerTests(unittest.TestCase):
                 )
                 self.assertTrue((root / "jobs" / first / "output.mp4").exists())
                 self.assertTrue((output_dir / "input_translated.mp4").exists())
+                self.assertTrue((output_dir / "input_translated.srt").exists())
+                self.assertTrue((output_dir / "input_translated_ja.srt").exists())
                 self.assertTrue((root / "done" / f"{first}.json").exists())
                 self.assertTrue((root / "done" / f"{second}.json").exists())
             finally:
@@ -95,6 +132,49 @@ class LocalJobManagerTests(unittest.TestCase):
             manager = self.make_manager(root)
             with self.assertRaises(ValueError):
                 manager.register_job(source)
+
+    def test_resume_inputs_are_staged_in_job_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            source = root / "input.mp4"
+            japanese_srt = root / "japanese.srt"
+            english_srt = root / "english.srt"
+            source.write_bytes(b"input")
+            japanese_srt.write_text("1\n00:00:00,000 --> 00:00:01,000\n日本語\n", encoding="utf-8")
+            english_srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nEnglish\n", encoding="utf-8")
+            manager = self.make_manager(root)
+
+            japanese_job = manager.register_job(source, japanese_srt=japanese_srt)
+            english_job = manager.register_job(source, english_srt=english_srt)
+            japanese_and_english_job = manager.register_job(
+                source,
+                japanese_srt=japanese_srt,
+                english_srt=english_srt,
+            )
+
+            japanese_dir = root / "jobs" / japanese_job
+            english_dir = root / "jobs" / english_job
+            both_dir = root / "jobs" / japanese_and_english_job
+            self.assertEqual((japanese_dir / "jp.srt").read_text(encoding="utf-8"), japanese_srt.read_text(encoding="utf-8"))
+            self.assertFalse((japanese_dir / "en.srt").exists())
+            self.assertEqual((english_dir / "en.srt").read_text(encoding="utf-8"), english_srt.read_text(encoding="utf-8"))
+            self.assertEqual((english_dir / "jp.srt").read_text(encoding="utf-8"), "")
+            self.assertTrue((both_dir / "jp.srt").exists())
+            self.assertTrue((both_dir / "en.srt").exists())
+
+    def test_resume_jobs_do_not_use_force(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            source = root / "input.mp4"
+            english_srt = root / "english.srt"
+            source.write_bytes(b"input")
+            english_srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nEnglish\n", encoding="utf-8")
+            manager = LocalJobManager(root)
+
+            job_id = manager.register_job(source, english_srt=english_srt)
+            job = json.loads((root / "queue" / f"{job_id}.json").read_text(encoding="utf-8"))
+            command = manager._default_command(job, root / "jobs" / job_id)
+            self.assertNotIn("--force", command)
 
     def test_pipeline_log_updates_progress_and_stage(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:

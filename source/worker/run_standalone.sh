@@ -12,13 +12,14 @@ if [[ -z "${TRANSLATE_PYTHON:-}" && ! -x "$PYTHON" ]]; then
   for candidate in python3.10 python3.11 python3.12 python3.13 python3; do
     if command -v "$candidate" >/dev/null 2>&1; then
       candidate_path="$(command -v "$candidate")"
-      candidate_version="$($candidate_path -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-      case "$candidate_version" in
-        3.10|3.11|3.12|3.13)
-          BOOTSTRAP_PYTHON="$candidate_path"
-          break
-          ;;
-      esac
+      if candidate_version="$($candidate_path -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)"; then
+        case "$candidate_version" in
+          3.10|3.11|3.12|3.13)
+            BOOTSTRAP_PYTHON="$candidate_path"
+            break
+            ;;
+        esac
+      fi
     fi
   done
 

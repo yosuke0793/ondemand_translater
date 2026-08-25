@@ -97,6 +97,8 @@ ollama pull qwen2.5:7b-instruct
 
 ## 使い方
 
+GUI の「日本語字幕 (.srt)」と「英語字幕 (.srt)」は任意指定です。動画だけを指定すると全処理を実行します。日本語SRTを指定すると文字起こしをスキップし、英語SRTを指定すると翻訳までをスキップして英語音声生成以降を実行します。両方を指定した場合も英語SRTを優先して、英語音声生成以降を実行します。
+
 ### スタンドアロンデスクトップ版（推奨）
 
 この構成では、ブラウザ、FastAPI、SSH、SCP、Slurmを使わず、1台のmacOSまたはUbuntu上で処理します。Tkinterの画面から複数のmp4をキューへ追加でき、ジョブは登録順に1本ずつ実行されます。画面を閉じても、変換処理は子プロセスとして継続します。
@@ -138,7 +140,7 @@ python3 -m tkinter
 TRANSLATE_DATA_DIR="$HOME/translate_service_data" ./run_standalone.sh
 ```
 
-画面から指定した用語集はジョブ専用のWhisper初期プロンプトとして使用されます。GeminiまたはDeepLを使う場合は、起動前に `GEMINI_API_KEY` または `DEEPL_API_KEY` を環境変数へ設定してください。出力ファイルは元動画の拡張子を除いた名前に `_translated.mp4` を付けて、指定した出力先へ保存します。処理用の中間ファイルは各ジョブの `jobs/<job_id>` に残ります。
+画面から指定した用語集はジョブ専用のWhisper初期プロンプトとして使用されます。GeminiまたはDeepLを使う場合は、起動前に `GEMINI_API_KEY` または `DEEPL_API_KEY` を環境変数へ設定してください。出力ファイルは元動画の拡張子を除いた名前に `_translated.mp4` を付けて、指定した出力先へ保存します。完了時には英語字幕の `元ファイル名_translated.srt` と、文字起こし結果の日本語字幕 `元ファイル名_translated_ja.srt` も同じ出力先へ保存します。処理用の中間ファイルは各ジョブの `jobs/<job_id>` に残ります。
 
 音声は画面のプルダウンから選択します。プルダウンには声質の概要とEdge TTSの音声名（例: `落ち着いた男性の声 ("en-US-AndrewNeural")`）を表示し、実行時には対応する音声名を変換処理へ渡します。
 
@@ -147,8 +149,14 @@ TRANSLATE_DATA_DIR="$HOME/translate_service_data" ./run_standalone.sh
 - `standalone_app.py`: Tkinterデスクトップ画面
 - `local_job_manager.py`: FIFOキュー、SQLite、子プロセス、状態遷移を管理
 - `run_standalone.sh`: 仮想環境からデスクトップ版を起動
+- `lecture_poc/prompts/engineering_terms.csv`: GUI起動時に読み込む工学系専門用語の雛形
 - `jobs/<job_id>/status.json`: 個別ジョブの状態
 - `logs/<job_id>.log`: 変換コマンドの標準出力ログ
+
+専門用語欄には起動時に工学系のデフォルト用語集が読み込まれます。
+GUIの「一覧確認」で内容を確認し、「CSV読込」で1行1用語のCSVを既存リストへ追加できます。
+「CSV書出」では `term` ヘッダー付きのUTF-8 CSVを出力します。CSVの2列目は任意の分野分類です。
+入力した新しい用語や読み込んだCSVの用語は、ユーザー用の `engineering_terms_custom.csv` に蓄積されます。
 
 ジョブ一覧には進捗率と現在の処理段階も表示されます。進捗率は、文字起こしや英語音声生成など処理時間の長い段階を重くした固定重みで計算され、処理段階は `pipeline.log` の開始ログから更新されます。処理中は99%を上限とし、最終出力の検証が完了した時点で100%になります。
 
