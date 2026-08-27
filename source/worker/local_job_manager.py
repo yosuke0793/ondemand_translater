@@ -389,8 +389,8 @@ class LocalJobManager:
                 self._move_job_file(job_id, self.error_dir)
                 continue_processing = False
             else:
-                self._move_job_file(job_id, self.error_dir)
                 self._update_status(job_id, "error", completed_at=now_iso(), error_message=str(exc))
+                self._move_job_file(job_id, self.error_dir)
                 continue_processing = True
             if not continue_processing:
                 return
