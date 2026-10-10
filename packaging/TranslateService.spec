@@ -20,7 +20,7 @@ gui_hidden = [
 ]
 worker_hidden = gui_hidden + ["lecture_poc.__main__", "edge_tts.__main__"]
 # XTTS is an optional external-model backend, not part of the default bundle.
-excluded = ["TTS", "pytest", "IPython"]
+excluded = ["TTS", "pytest", "IPython", "cv2", "pytesseract"]
 
 gui = Analysis(
     [str(SOURCE / "standalone_app.py")],

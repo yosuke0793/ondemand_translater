@@ -53,11 +53,17 @@ from an unrelated environment fails.
 The wrappers require several GB of disk and may download substantial PyTorch,
 OpenCV and speech/translation dependencies. They do **not** download model
 weights. Online speech/model services, Argos language packs, optional Ollama,
-Tesseract OCR and XTTS remain separate runtime features; "self-contained" means
+XTTS remain separate runtime features; "self-contained" means
 the default application/runtime dependencies and media executables, not every
 optional service/model. CUDA drivers/libraries are not bundled; CPU is the
 portable baseline. Network/provider functionality needs separate acceptance
 testing using your own credentials.
+
+OCR-based video text replacement is omitted from all bundled distributions.
+OpenCV and pytesseract are excluded from the frozen executables (the shared
+build dependency locks still contain them). Bundled workers reject
+`--video-text-overlay*` arguments explicitly. The source-mode optional feature
+is unchanged and requires its own Tesseract and compatible FFmpeg installation.
 
 ## Runtime layout and resources
 
@@ -102,8 +108,9 @@ Do **not** replace these with copied Homebrew executables: those often depend
 on developer-local dylibs. macOS staging rejects any linkage except `/usr/lib/`
 and `/System/Library/`. Each tool is launched natively during staging. Final
 bundle tests run with the bundled executable directory first and only OS tools
-in PATH, then encode/probe a synthetic H.264/AAC video and verify `subtitles` and
-`drawtext` filter availability. Windows statically linked upstream media tools
+in PATH, then encode/probe a synthetic H.264/AAC video and verify the `subtitles`
+filter. `drawtext` is not required because OCR text replacement is omitted.
+Windows statically linked upstream media tools
 are checked through actual execution in the clean hosted build.
 
 Upstream FFmpeg platform LICENSE/README, manifest hashes, captured build

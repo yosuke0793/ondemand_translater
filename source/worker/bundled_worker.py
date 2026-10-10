@@ -7,7 +7,7 @@ import runpy
 import sys
 from pathlib import Path
 
-from app_runtime import bundle_self_test, configure_runtime
+from app_runtime import bundle_self_test, configure_runtime, is_bundled
 
 
 def main() -> int:
@@ -23,6 +23,12 @@ def main() -> int:
         del sys.argv[1]
         runpy.run_module("edge_tts", run_name="__main__")
         return 0
+    if is_bundled() and any(
+        argument.split("=", 1)[0].startswith("--video-text-overlay")
+        for argument in sys.argv[1:]
+    ):
+        print("同梱版ではOCRによる動画内文字置換には対応していません。", file=sys.stderr)
+        return 1
     from lecture_poc.__main__ import main as pipeline_main
 
     return pipeline_main()

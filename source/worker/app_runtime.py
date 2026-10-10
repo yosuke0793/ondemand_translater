@@ -76,7 +76,7 @@ def bundle_self_test(role: str, report_path: Path | None = None) -> int:
 
             secure_backend()
         elif role == "worker":
-            for module in ("faster_whisper", "argostranslate.translate", "edge_tts", "requests", "cv2", "pytesseract"):
+            for module in ("faster_whisper", "argostranslate.translate", "edge_tts", "requests"):
                 importlib.import_module(module)
             subprocess.run(
                 [sys.executable, "--edge-tts", "--help"],

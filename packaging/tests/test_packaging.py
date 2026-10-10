@@ -19,6 +19,24 @@ import release
 
 
 class PackagingTests(unittest.TestCase):
+    def test_media_check_accepts_no_drawtext_but_requires_subtitles(self):
+        with patch.object(build, "run") as run:
+            run.side_effect = [
+                subprocess.CompletedProcess([], 0, stdout=" ... subtitles V->V Render subtitles\n"),
+                subprocess.CompletedProcess([], 0),
+                subprocess.CompletedProcess([], 0, stdout=json.dumps({
+                    "streams": [{"codec_name": "h264"}, {"codec_name": "aac"}]
+                })),
+            ]
+            with patch.object(Path, "unlink"):
+                build.verify_media_tools(Path("/bundle"), "macos-x64", Path("/smoke"), {})
+            self.assertEqual(run.call_count, 3)
+            run.reset_mock()
+            run.side_effect = [subprocess.CompletedProcess([], 0, stdout=" ... drawtext V->V Draw text\n")]
+            with self.assertRaisesRegex(RuntimeError, "subtitles"):
+                build.verify_media_tools(Path("/bundle"), "macos-x64", Path("/smoke"), {})
+            self.assertEqual(run.call_count, 1)
+
     def test_failed_command_exposes_captured_diagnostics_and_still_fails(self):
         error = subprocess.CalledProcessError(
             1, ["worker", "--help"], output="partial help", stderr="UnicodeEncodeError"
@@ -60,6 +78,8 @@ class PackagingTests(unittest.TestCase):
         exec(compile((PACKAGING / "TranslateService.spec").read_text(), "spec", "exec"), namespace)
         self.assertEqual(len(calls["Analysis"]), 2)
         for _, kwargs in calls["Analysis"]:
+            self.assertIn("cv2", kwargs["excludes"])
+            self.assertIn("pytesseract", kwargs["excludes"])
             self.assertIn(str(PACKAGING.parent / "source" / "worker"), kwargs["pathex"])
             self.assertIn((str(PACKAGING / "VERSION"), "."), kwargs["datas"])
             self.assertIn((str(PACKAGING / "BUNDLED"), "."), kwargs["datas"])

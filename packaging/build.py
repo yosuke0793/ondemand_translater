@@ -161,7 +161,7 @@ def verify_media_tools(binary_dir: Path, target: str, test_dir: Path, environmen
     suffix = ".exe" if target.startswith("windows") else ""
     ffmpeg = str(binary_dir / f"ffmpeg{suffix}")
     filters = run([ffmpeg, "-hide_banner", "-filters"], capture_output=True, text=True).stdout
-    for name in ("subtitles", "drawtext"):
+    for name in ("subtitles",):
         if not re.search(rf"\s{re.escape(name)}\s", filters):
             raise RuntimeError(f"FFmpeg missing required filter: {name}")
     fixture = test_dir / "synthetic.mp4"

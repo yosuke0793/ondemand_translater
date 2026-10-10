@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
+from contextlib import redirect_stderr
 
 import app_runtime
 import bundled_worker
@@ -139,6 +140,18 @@ class CredentialStoreTests(unittest.TestCase):
 
 
 class BundleRuntimeTests(unittest.TestCase):
+    def test_bundle_explicitly_rejects_ocr_options(self) -> None:
+        for option in ("--video-text-overlay", "--video-text-overlay-fps=2"):
+            output = io.StringIO()
+            with patch.object(sys, "argv", ["TranslateWorker", option]), \
+                    patch.object(bundled_worker, "is_bundled", return_value=True), \
+                    patch.object(bundled_worker, "configure_runtime"), \
+                    patch.object(bundled_worker.multiprocessing, "freeze_support"), \
+                    redirect_stderr(output):
+                self.assertEqual(bundled_worker.main(), 1)
+            self.assertIn("OCR", output.getvalue())
+            self.assertIn("対応していません", output.getvalue())
+
     def test_windows_worker_help_writes_utf8_to_redirected_legacy_streams(self) -> None:
         output = io.BytesIO()
         errors = io.BytesIO()
