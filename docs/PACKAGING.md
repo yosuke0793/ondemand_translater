@@ -163,6 +163,12 @@ graph, **not a byte-identical/reproducible-build guarantee**. Actions pins Pytho
 
 ## Validation and artifacts
 
+The Windows bundled worker writes stdout/stderr as UTF-8, including when
+redirected to build checks or job logs. Frozen worker checks explicitly decode
+UTF-8. If a checked command fails, captured stdout/stderr are printed before
+the build aborts; use that diagnostic rather than only the exit-code annotation.
+The workflow's checkout/setup-python pins use Node.js 24.
+
 Lightweight configuration tests (no application dependency install):
 
 ```bash

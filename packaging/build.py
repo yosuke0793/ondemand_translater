@@ -46,7 +46,13 @@ def native_target() -> str:
 
 def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
     print("+", " ".join(map(str, command)), flush=True)
-    return subprocess.run(list(map(str, command)), check=True, **kwargs)
+    try:
+        return subprocess.run(list(map(str, command)), check=True, **kwargs)
+    except subprocess.CalledProcessError as exc:
+        for label, output in (("stdout", exc.stdout), ("stderr", exc.stderr)):
+            if output:
+                print(f"Failed command {label}:\n{output}", file=sys.stderr, flush=True)
+        raise
 
 
 def sha256(path: Path) -> str:
@@ -201,7 +207,7 @@ def verify_bundle(bundle: Path, target: str) -> list[dict]:
         report = test_dir / f"{role}.json"
         report.unlink(missing_ok=True)
         run([str(binary_dir / f"{name}{suffix}"), "--bundle-self-test", str(report)],
-            cwd=test_dir, env=environment, capture_output=True, text=True, timeout=180)
+            cwd=test_dir, env=environment, capture_output=True, text=True, encoding="utf-8", timeout=180)
         payload = json.loads(report.read_text(encoding="utf-8"))
         if (payload.get("status"), payload.get("role"), payload.get("version")) != ("ok", role, version()):
             raise RuntimeError(f"Invalid frozen self-test report: {payload}")
@@ -209,7 +215,7 @@ def verify_bundle(bundle: Path, target: str) -> list[dict]:
             raise RuntimeError(f"Missing frozen tool results: {payload}")
         reports.append(payload)
     worker_help = run([str(binary_dir / f"TranslateWorker{suffix}"), "--help"],
-                      cwd=test_dir, env=environment, capture_output=True, text=True, timeout=60)
+                      cwd=test_dir, env=environment, capture_output=True, text=True, encoding="utf-8", timeout=60)
     if "--input" not in worker_help.stdout or "--outdir" not in worker_help.stdout:
         raise RuntimeError("Frozen worker did not expose the lecture_poc CLI")
     verify_media_tools(binary_dir, target, test_dir, environment)

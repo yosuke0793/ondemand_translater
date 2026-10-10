@@ -12,6 +12,10 @@ from app_runtime import bundle_self_test, configure_runtime
 
 def main() -> int:
     multiprocessing.freeze_support()
+    if sys.platform == "win32":
+        for stream in (sys.stdout, sys.stderr):
+            if stream is not None:
+                stream.reconfigure(encoding="utf-8")
     if sys.argv[1:2] == ["--bundle-self-test"] and len(sys.argv) <= 3:
         return bundle_self_test("worker", Path(sys.argv[2]) if len(sys.argv) == 3 else None)
     configure_runtime()

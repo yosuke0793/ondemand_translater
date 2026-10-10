@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import io
 import os
 import subprocess
 import sys
@@ -138,6 +139,26 @@ class CredentialStoreTests(unittest.TestCase):
 
 
 class BundleRuntimeTests(unittest.TestCase):
+    def test_windows_worker_help_writes_utf8_to_redirected_legacy_streams(self) -> None:
+        output = io.BytesIO()
+        errors = io.BytesIO()
+        stdout = io.TextIOWrapper(output, encoding="cp1252")
+        stderr = io.TextIOWrapper(errors, encoding="cp1252")
+        with patch.object(sys, "platform", "win32"), patch.object(sys, "argv", ["TranslateWorker", "--help"]), \
+                patch.object(sys, "stdout", stdout), patch.object(sys, "stderr", stderr), \
+                patch.object(bundled_worker.multiprocessing, "freeze_support"), \
+                patch.object(bundled_worker, "configure_runtime"):
+            with self.assertRaises(SystemExit) as captured:
+                bundled_worker.main()
+            self.assertEqual(captured.exception.code, 0)
+            stdout.flush()
+            self.assertEqual(stderr.encoding, "utf-8")
+        help_text = output.getvalue().decode("utf-8")
+        self.assertIn("--input", help_text)
+        self.assertIn("入力する講義動画", help_text)
+        stdout.close()
+        stderr.close()
+
     def test_legacy_frozen_gui_is_not_a_self_contained_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)

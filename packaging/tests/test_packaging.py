@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import ast
+import io
 import json
 import re
 import shutil
+import subprocess
 import sys
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,6 +19,18 @@ import release
 
 
 class PackagingTests(unittest.TestCase):
+    def test_failed_command_exposes_captured_diagnostics_and_still_fails(self):
+        error = subprocess.CalledProcessError(
+            1, ["worker", "--help"], output="partial help", stderr="UnicodeEncodeError"
+        )
+        output = io.StringIO()
+        with patch.object(build.subprocess, "run", side_effect=error), redirect_stderr(output):
+            with self.assertRaises(subprocess.CalledProcessError) as captured:
+                build.run(["worker", "--help"], capture_output=True, text=True)
+        self.assertIs(captured.exception, error)
+        self.assertIn("partial help", output.getvalue())
+        self.assertIn("UnicodeEncodeError", output.getvalue())
+
     def test_version_and_tag_validation(self):
         self.assertEqual(build.version("v" + build.version()), build.version())
         with self.assertRaises(ValueError):
