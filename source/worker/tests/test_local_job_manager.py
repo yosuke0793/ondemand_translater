@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from local_job_manager import LocalJobManager
 from standalone_app import (
@@ -99,7 +100,7 @@ class LocalJobManagerTests(unittest.TestCase):
                 self.assertEqual(
                     [job["job_id"] for job in manager.get_jobs()], [second, first]
                 )
-                self.assertTrue((root / "jobs" / first / "output.mp4").exists())
+                self.assertTrue(Path(manager.get_job(first)["output_video"]).exists())
                 self.assertTrue((output_dir / "input_translated.mp4").exists())
                 self.assertTrue((output_dir / "input_translated.srt").exists())
                 self.assertTrue((output_dir / "input_translated_ja.srt").exists())
@@ -107,6 +108,96 @@ class LocalJobManagerTests(unittest.TestCase):
                 self.assertTrue((root / "done" / f"{second}.json").exists())
             finally:
                 manager.stop()
+
+    def test_success_removes_job_videos_after_export(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            source = root / "lecture.mp4"
+            source.write_bytes(b"input")
+            manager = self.make_manager(root / "data")
+            output_dir = root / "exports"
+            job_id = manager.register_job(source, output_directory=output_dir)
+            job_dir = manager.jobs_dir / job_id
+            for name in ("final.mp4", "final_sub.mp4", "final_soft_sub.mp4", "video_overlay.mp4"):
+                (job_dir / name).write_bytes(b"intermediate")
+            nested_dir = job_dir / "nested"
+            nested_dir.mkdir()
+            (nested_dir / "intermediate.MP4").write_bytes(b"intermediate")
+            (nested_dir / "final_soft_sub.mkv").write_bytes(b"intermediate")
+            (job_dir / "audio.wav").write_bytes(b"audio")
+            unrelated_video = output_dir / "unrelated.mp4"
+            unrelated_video.write_bytes(b"unrelated")
+            other_job = manager.register_job(source, output_directory=output_dir)
+
+            manager._run_job(manager.queue_dir / f"{job_id}.json")
+
+            job = manager.get_job(job_id)
+            self.assertEqual(job["status"], "done")
+            self.assertEqual(job["progress_percent"], 100)
+            self.assertEqual(Path(job["output_video"]).read_bytes(), b"intermediate")
+            self.assertEqual(list(job_dir.rglob("*.mp4")), [])
+            self.assertEqual(list(nested_dir.iterdir()), [])
+            self.assertEqual(source.read_bytes(), b"input")
+            self.assertEqual(unrelated_video.read_bytes(), b"unrelated")
+            self.assertTrue((manager.jobs_dir / other_job / "input.mp4").exists())
+            self.assertTrue((output_dir / "lecture_translated.srt").exists())
+            self.assertTrue((output_dir / "lecture_translated_ja.srt").exists())
+            self.assertTrue((job_dir / "audio.wav").exists())
+            self.assertTrue((job_dir / "status.json").exists())
+            self.assertTrue((manager.logs_dir / f"{job_id}.log").exists())
+
+    def test_success_preserves_output_inside_job_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            source = root / "lecture.mp4"
+            source.write_bytes(b"input")
+            manager = self.make_manager(root / "data")
+            job_id = manager.register_job(source)
+            job_dir = manager.jobs_dir / job_id
+
+            manager._run_job(manager.queue_dir / f"{job_id}.json")
+
+            job = manager.get_job(job_id)
+            self.assertEqual(job["status"], "done")
+            self.assertEqual(list(job_dir.glob("*.mp4")), [Path(job["output_video"])])
+            self.assertEqual(Path(job["output_video"]).read_bytes(), b"video")
+            self.assertTrue((job_dir / "lecture_translated.srt").exists())
+            self.assertTrue((job_dir / "lecture_translated_ja.srt").exists())
+
+    def test_export_failure_preserves_job_videos(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            source = root / "lecture.mp4"
+            source.write_bytes(b"input")
+            manager = self.make_manager(root / "data")
+            output_dir = root / "exports"
+            job_id = manager.register_job(source, output_directory=output_dir)
+            job_dir = manager.jobs_dir / job_id
+            (output_dir / "lecture_translated.srt" / "en_aligned.srt").mkdir(parents=True)
+
+            manager._run_job(manager.queue_dir / f"{job_id}.json")
+
+            self.assertEqual(manager.get_job(job_id)["status"], "error")
+            self.assertTrue((job_dir / "input.mp4").exists())
+            self.assertTrue((job_dir / "output.mp4").exists())
+            self.assertTrue((manager.error_dir / f"{job_id}.json").exists())
+
+    def test_cleanup_failure_is_reported_as_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            source = root / "lecture.mp4"
+            source.write_bytes(b"input")
+            manager = self.make_manager(root / "data")
+            job_id = manager.register_job(source, output_directory=root / "exports")
+            with patch.object(Path, "unlink", side_effect=PermissionError("cleanup denied")):
+                manager._run_job(manager.queue_dir / f"{job_id}.json")
+
+            job = manager.get_job(job_id)
+            self.assertEqual(job["status"], "error")
+            self.assertIn("cleanup denied", job["error_message"])
+            self.assertTrue(Path(job["output_video"]).exists())
+            self.assertTrue((manager.error_dir / f"{job_id}.json").exists())
+            self.assertFalse((manager.done_dir / f"{job_id}.json").exists())
 
     def test_failed_process_is_marked_error(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -121,6 +212,7 @@ class LocalJobManagerTests(unittest.TestCase):
                 self.assertIn("exit code", job["error_message"])
                 status = json.loads((root / "jobs" / job_id / "status.json").read_text())
                 self.assertEqual(status["status"], "error")
+                self.assertTrue((root / "jobs" / job_id / "input.mp4").exists())
             finally:
                 manager.stop()
 

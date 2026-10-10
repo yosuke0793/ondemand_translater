@@ -4,22 +4,16 @@ Set-StrictMode -Version Latest
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectDir = Split-Path -Parent $ScriptDir
 $WorkerDir = Join-Path $ProjectDir "source\worker"
-$VenvPython = Join-Path $WorkerDir ".venv\Scripts\python.exe"
+. (Join-Path $ScriptDir "python_environment.ps1")
+$VenvPython = Assert-TranslateVenv -VenvDir (Join-Path $WorkerDir ".venv")
 $DistDir = Join-Path $ScriptDir "dist"
 Set-Location $ProjectDir
 
-if (-not (Test-Path $VenvPython)) {
-    throw "Python environment not found: $VenvPython. Run win\install.ps1 first."
-}
-
 Write-Host "[build] Installing/checking PyInstaller..."
-& $VenvPython -m pip install pyinstaller
-if ($LASTEXITCODE -ne 0) {
-    throw "PyInstaller installation failed."
-}
+Invoke-TranslatePythonChecked -Executable $VenvPython -Arguments @("-I", "-m", "pip", "install", "pyinstaller") -Step "PyInstaller installation"
 
 Write-Host "[build] Building TranslateService.exe..."
-& $VenvPython -m PyInstaller `
+& $VenvPython -I -m PyInstaller `
     --noconfirm `
     --clean `
     --windowed `

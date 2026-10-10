@@ -4,13 +4,10 @@ Set-StrictMode -Version Latest
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectDir = Split-Path -Parent $ScriptDir
 $WorkerDir = Join-Path $ProjectDir "source\worker"
-$VenvPython = Join-Path $WorkerDir ".venv\Scripts\python.exe"
+. (Join-Path $ScriptDir "python_environment.ps1")
+$VenvPython = Assert-TranslateVenv -VenvDir (Join-Path $WorkerDir ".venv")
 $PackagedApp = Join-Path $ScriptDir "dist\TranslateService\TranslateService.exe"
 
-if (-not (Test-Path $VenvPython)) {
-    Write-Error "Python environment not found. Run win\install.ps1 first."
-    exit 1
-}
 if (-not (Get-Command ffmpeg.exe -ErrorAction SilentlyContinue)) {
     Write-Error "FFmpeg was not found in PATH. Run win\install.ps1 first."
     exit 1

@@ -18,6 +18,7 @@ from typing import Callable
 
 
 TERMINAL_STATES = {"done", "error", "cancelled"}
+VIDEO_SUFFIXES = {".mp4", ".mkv", ".mov", ".m4v", ".avi", ".webm", ".mpeg", ".mpg"}
 
 PIPELINE_STAGES = {
     "extract_audio": (8, "音声を抽出中"),
@@ -372,6 +373,7 @@ class LocalJobManager:
             if jp_srt_path.exists():
                 output_jp_srt_path = output_path.parent / f"{output_path.stem}_ja.srt"
                 shutil.copy2(jp_srt_path, output_jp_srt_path)
+            self._cleanup_job_videos(job_dir, output_path)
             self._move_job_file(job_id, self.done_dir)
             self._update_status(
                 job_id,
@@ -394,6 +396,18 @@ class LocalJobManager:
                 continue_processing = True
             if not continue_processing:
                 return
+
+    def _cleanup_job_videos(self, job_dir: Path, output_path: Path) -> None:
+        preserved_output = output_path.resolve()
+        for video_path in job_dir.rglob("*"):
+            if video_path.suffix.lower() not in VIDEO_SUFFIXES or not video_path.is_file():
+                continue
+            if video_path.resolve() == preserved_output:
+                continue
+            try:
+                video_path.unlink()
+            except OSError as exc:
+                raise RuntimeError(f"ジョブ内の動画を削除できませんでした: {video_path}: {exc}") from exc
 
     def _wait_for_process(
         self, job_id: str, process: subprocess.Popen[str], job_dir: Path
