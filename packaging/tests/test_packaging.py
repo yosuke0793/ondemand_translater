@@ -42,7 +42,7 @@ command() {
         return
     fi
     case "$2" in
-        gcc|g++|ar|ranlib|cmake|pkg-config|make|nasm) return 0 ;;
+        gcc|g++|ar|ranlib|cmake|pkg-config|make|nasm|cygpath) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -67,6 +67,53 @@ command() {
         self.assertLess(prepare, build_step)
         self.assertIn("if: runner.os == 'macOS'", workflow[prepare:build_step])
         self.assertIn("brew install cmake pkg-config nasm", workflow[prepare:build_step])
+
+    @unittest.skipUnless(shutil.which("bash"), "Bash is required to exercise CMake configuration")
+    def test_windows_cmake_receives_absolute_tools_and_native_flag_paths(self):
+        recipe = (PACKAGING / "build-ffmpeg.sh").read_text()
+        windows = recipe.split('elif [[ "$TARGET" == windows-x64 ]]; then\n', 1)[1]
+        configure = windows[windows.index('    NATIVE_PREFIX='):windows.index('    cmake --build')]
+        shell = r'''
+set -euo pipefail
+PREFIX="/d/build with spaces/prefix"
+BUILD_DIR="/d/build with spaces/build"
+CC=gcc CXX=g++ AR=ar RANLIB=ranlib
+CFLAGS="-O2 -I$PREFIX/include"
+CXXFLAGS="-I$PREFIX/include"
+LDFLAGS="-L$PREFIX/lib -static"
+command() { printf '/mingw64/bin/%s.exe\n' "$2"; }
+cygpath() {
+    case "$2" in
+        /mingw64/*) printf 'C:/msys64%s\n' "$2" ;;
+        /usr/*) printf 'C:/msys64%s\n' "$2" ;;
+        /d/*) printf 'D:/%s\n' "${2#/d/}" ;;
+        *) return 1 ;;
+    esac
+}
+cmake() {
+    printf '%s\n' "$CFLAGS" "$CXXFLAGS" "$LDFLAGS"
+    printf '%s\n' "$@"
+}
+''' + configure
+        result = subprocess.run(
+            [shutil.which("bash"), "-c", shell], capture_output=True, text=True, check=True,
+        )
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[:3], [
+            "-O2 -ID:/build with spaces/prefix/include",
+            "-ID:/build with spaces/prefix/include",
+            "-LD:/build with spaces/prefix/lib -static",
+        ])
+        for key, value in (
+            ("CMAKE_C_COMPILER", "C:/msys64/mingw64/bin/gcc.exe"),
+            ("CMAKE_CXX_COMPILER", "C:/msys64/mingw64/bin/g++.exe"),
+            ("CMAKE_AR", "C:/msys64/mingw64/bin/ar.exe"),
+            ("CMAKE_RANLIB", "C:/msys64/mingw64/bin/ranlib.exe"),
+            ("CMAKE_MAKE_PROGRAM", "C:/msys64/usr/bin/make.exe"),
+            ("CMAKE_INSTALL_PREFIX", "D:/build with spaces/prefix"),
+            ("CMAKE_PREFIX_PATH", "D:/build with spaces/prefix"),
+        ):
+            self.assertIn(f"-D{key}={value}", lines)
 
     def make_source_archive(self, directory, inputs, target, value, changes=None):
         manifest_bytes = (inputs / "ffmpeg.json").read_bytes()

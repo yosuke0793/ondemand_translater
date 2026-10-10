@@ -59,7 +59,7 @@ elif [[ "$TARGET" == windows-x64 ]]; then
     export PATH="/mingw64/bin:/usr/bin:$PATH"
     CROSS="${CROSS_COMPILE:-}"
     export CC="${CROSS}gcc" CXX="${CROSS}g++" AR="${CROSS}ar" RANLIB="${CROSS}ranlib"
-    for tool in "$CC" "$CXX" "$AR" "$RANLIB" cmake pkg-config make nasm; do
+    for tool in "$CC" "$CXX" "$AR" "$RANLIB" cmake pkg-config make nasm cygpath; do
         command -v "$tool" >/dev/null || {
             echo "Required MINGW64 build tool is missing: $tool" >&2
             exit 1
@@ -76,11 +76,22 @@ elif [[ "$TARGET" == windows-x64 ]]; then
         --host=x86_64-w64-mingw32 --without-bzip2 --without-png --with-zlib=yes
     build_autotools fribidi-1.0.16.tar.xz "$BUILD_DIR/fribidi" --host=x86_64-w64-mingw32
     extract_source harfbuzz-10.4.0.tar.xz "$BUILD_DIR/harfbuzz"
+    NATIVE_PREFIX="$(cygpath -m "$PREFIX")"
+    CMAKE_CC="$(cygpath -m "$(command -v "$CC")")"
+    CMAKE_CXX="$(cygpath -m "$(command -v "$CXX")")"
+    CMAKE_AR="$(cygpath -m "$(command -v "$AR")")"
+    CMAKE_RANLIB="$(cygpath -m "$(command -v "$RANLIB")")"
+    CMAKE_MAKE="$(cygpath -m /usr/bin/make.exe)"
+    CMAKE_CXXFLAGS="${CXXFLAGS:-}"
+    CFLAGS="${CFLAGS//$PREFIX/$NATIVE_PREFIX}" \
+    CXXFLAGS="${CMAKE_CXXFLAGS//$PREFIX/$NATIVE_PREFIX}" \
+    LDFLAGS="${LDFLAGS//$PREFIX/$NATIVE_PREFIX}" \
     cmake -S "$BUILD_DIR/harfbuzz" -B "$BUILD_DIR/harfbuzz-build" \
         -G "Unix Makefiles" \
-        -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_PREFIX_PATH="$PREFIX" \
-        -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_C_COMPILER="$CC" \
-        -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_AR="$AR" -DCMAKE_RANLIB="$RANLIB" \
+        -DCMAKE_MAKE_PROGRAM="$CMAKE_MAKE" \
+        -DCMAKE_INSTALL_PREFIX="$NATIVE_PREFIX" -DCMAKE_PREFIX_PATH="$NATIVE_PREFIX" \
+        -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_C_COMPILER="$CMAKE_CC" \
+        -DCMAKE_CXX_COMPILER="$CMAKE_CXX" -DCMAKE_AR="$CMAKE_AR" -DCMAKE_RANLIB="$CMAKE_RANLIB" \
         -DBUILD_SHARED_LIBS=OFF -DHB_HAVE_FREETYPE=ON -DHB_HAVE_GLIB=OFF \
         -DHB_HAVE_ICU=OFF -DHB_HAVE_CAIRO=OFF -DHB_HAVE_GRAPHITE2=OFF \
         -DHB_HAVE_DIRECTWRITE=ON -DHB_BUILD_UTILS=OFF -DHB_BUILD_SUBSET=OFF

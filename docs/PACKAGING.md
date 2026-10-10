@@ -47,6 +47,11 @@ The native MINGW64 build uses `gcc`, `g++`, `ar` and `ranlib` from
 `C:\msys64\mingw64\bin`, rather than assuming cross-prefixed binutils aliases
 exist. That directory is placed before Git/Visual Studio tools on the build
 process PATH. The Windows HarfBuzz build explicitly uses Unix Makefiles.
+Its CMake compiler, archiver and ranlib settings use absolute Windows paths
+resolved from the selected MINGW64 tools. The make program is explicitly
+MSYS2's `C:\msys64\usr\bin\make.exe`, so CMake cannot choose Strawberry Perl's
+`gmake.exe`. Prefix paths in CMake's inherited compiler/linker flags are also
+converted from MSYS paths to native Windows paths.
 This changes the build machine's MSYS2 environment; use a dedicated build machine
 or the clean GitHub runner, not a shared development installation. A clean
 GitHub Windows runner provides Inno Setup; locally install it yourself and, if
