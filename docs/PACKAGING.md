@@ -170,6 +170,12 @@ graph, **not a byte-identical/reproducible-build guarantee**. Actions pins Pytho
 
 ## Validation and artifacts
 
+The worker spec collects faster-whisper package data, including both Silero VAD
+ONNX assets. These small voice-activity models are bundled; unlike Whisper
+transcription weights they are not first-run downloads. Worker self-tests check
+both files and create the CPU ONNX sessions via `get_vad_model()` without network
+access, so missing package data fails before an installer is produced.
+
 The Windows bundled worker writes stdout/stderr as UTF-8, including when
 redirected to build checks or job logs. Frozen worker checks explicitly decode
 UTF-8. If a checked command fails, captured stdout/stderr are printed before

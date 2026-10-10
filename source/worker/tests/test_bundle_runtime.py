@@ -281,11 +281,15 @@ class BundleRuntimeTests(unittest.TestCase):
             prompts.mkdir(parents=True)
             for name in ("engineering_terms.csv", "whisper_initial_prompt.txt", "jp_clean_ollama.txt"):
                 (prompts / name).touch()
+            for name in ("silero_encoder_v5.onnx", "silero_decoder_v5.onnx"):
+                (root / name).touch()
+            vad = Mock()
+            vad.get_assets_path.return_value = str(root)
             report = root / "report.json"
             with patch.object(app_runtime, "configure_runtime"), patch.object(
                 app_runtime, "is_bundled", return_value=True
             ), patch.object(app_runtime, "resource_root", return_value=root), patch.object(
-                app_runtime.importlib, "import_module"
+                app_runtime.importlib, "import_module", return_value=vad
             ), patch.object(app_runtime.subprocess, "run", side_effect=subprocess.CalledProcessError(
                 1, [sys.executable, "--edge-tts", "--help"]
             )) as command:
@@ -294,7 +298,36 @@ class BundleRuntimeTests(unittest.TestCase):
                     [sys.executable, "--edge-tts", "--help"],
                     capture_output=True, text=True, check=True, timeout=60,
                 )
+                vad.get_vad_model.assert_called_once_with()
             self.assertEqual(json.loads(report.read_text())["status"], "error")
+
+    def test_worker_self_test_rejects_missing_vad_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            prompts = root / "lecture_poc" / "prompts"
+            prompts.mkdir(parents=True)
+            for name in ("engineering_terms.csv", "whisper_initial_prompt.txt", "jp_clean_ollama.txt"):
+                (prompts / name).touch()
+            vad = Mock()
+            vad.get_assets_path.return_value = str(root)
+            report = root / "report.json"
+            with patch.object(app_runtime, "configure_runtime"), patch.object(
+                app_runtime, "is_bundled", return_value=True
+            ), patch.object(app_runtime, "resource_root", return_value=root), patch.object(
+                app_runtime.importlib, "import_module", return_value=vad
+            ):
+                self.assertEqual(app_runtime.bundle_self_test("worker", report), 1)
+            payload = json.loads(report.read_text())
+            self.assertIn("silero_encoder_v5.onnx", payload["error"])
+            (root / "silero_encoder_v5.onnx").touch()
+            with patch.object(app_runtime, "configure_runtime"), patch.object(
+                app_runtime, "is_bundled", return_value=True
+            ), patch.object(app_runtime, "resource_root", return_value=root), patch.object(
+                app_runtime.importlib, "import_module", return_value=vad
+            ):
+                self.assertEqual(app_runtime.bundle_self_test("worker", report), 1)
+            self.assertIn("silero_decoder_v5.onnx", json.loads(report.read_text())["error"])
+            vad.get_vad_model.assert_not_called()
 
 
 if __name__ == "__main__":

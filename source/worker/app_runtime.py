@@ -78,6 +78,12 @@ def bundle_self_test(role: str, report_path: Path | None = None) -> int:
         elif role == "worker":
             for module in ("faster_whisper", "argostranslate.translate", "edge_tts", "requests"):
                 importlib.import_module(module)
+            vad = importlib.import_module("faster_whisper.vad")
+            assets = Path(vad.get_assets_path())
+            for name in ("silero_encoder_v5.onnx", "silero_decoder_v5.onnx"):
+                if not (assets / name).is_file():
+                    raise FileNotFoundError(f"Missing bundled VAD resource: {name}")
+            vad.get_vad_model()
             subprocess.run(
                 [sys.executable, "--edge-tts", "--help"],
                 capture_output=True, text=True, check=True, timeout=60,

@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files
 
 ROOT = Path(SPECPATH).parent
 WORK = ROOT / "packaging" / ".work"
@@ -30,7 +31,8 @@ gui = Analysis(
 )
 worker = Analysis(
     [str(SOURCE / "bundled_worker.py")],
-    pathex=paths, binaries=[], datas=resources, hiddenimports=worker_hidden,
+    pathex=paths, binaries=[], datas=resources + collect_data_files("faster_whisper"),
+    hiddenimports=worker_hidden,
     hookspath=[], hooksconfig={}, runtime_hooks=[], excludes=excluded,
     noarchive=False,
 )

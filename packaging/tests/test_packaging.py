@@ -8,9 +8,10 @@ import shutil
 import subprocess
 import sys
 import unittest
+from types import ModuleType
 from contextlib import redirect_stderr
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 PACKAGING = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PACKAGING))
@@ -75,7 +76,17 @@ class PackagingTests(unittest.TestCase):
         namespace = {"SPECPATH": str(PACKAGING)}
         for name in ("Analysis", "PYZ", "EXE", "COLLECT", "BUNDLE"):
             namespace[name] = record(name)
-        exec(compile((PACKAGING / "TranslateService.spec").read_text(), "spec", "exec"), namespace)
+        assets = [
+            ("/installed/faster_whisper/assets/silero_encoder_v5.onnx", "faster_whisper/assets"),
+            ("/installed/faster_whisper/assets/silero_decoder_v5.onnx", "faster_whisper/assets"),
+        ]
+        hooks = ModuleType("PyInstaller.utils.hooks")
+        hooks.collect_data_files = Mock(return_value=assets)
+        with patch.dict(sys.modules, {"PyInstaller.utils.hooks": hooks}):
+            exec(compile((PACKAGING / "TranslateService.spec").read_text(), "spec", "exec"), namespace)
+        hooks.collect_data_files.assert_called_once_with("faster_whisper")
+        for asset in assets:
+            self.assertIn(asset, calls["Analysis"][1][1]["datas"])
         self.assertEqual(len(calls["Analysis"]), 2)
         for _, kwargs in calls["Analysis"]:
             self.assertIn("cv2", kwargs["excludes"])
@@ -86,7 +97,7 @@ class PackagingTests(unittest.TestCase):
             for source, destination in kwargs["datas"]:
                 self.assertNotIn("/data/", source)
                 self.assertNotIn("/.venv/", source)
-                self.assertIn(destination, {".", "lecture_poc/prompts", "third-party-notices"})
+                self.assertIn(destination, {".", "lecture_poc/prompts", "third-party-notices", "faster_whisper/assets"})
             self.assertTrue(any(destination == "lecture_poc/prompts"
                                 for _, destination in kwargs["datas"]))
         self.assertFalse(calls["EXE"][0][1]["console"])
