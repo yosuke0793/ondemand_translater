@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -28,6 +29,45 @@ import app_runtime
 
 
 class PackagingTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("bash"), "Bash is required to exercise the native recipe")
+    def test_windows_recipe_uses_available_native_mingw_tools(self):
+        recipe = (PACKAGING / "build-ffmpeg.sh").read_text()
+        windows = recipe.split('elif [[ "$TARGET" == windows-x64 ]]; then\n', 1)[1]
+        setup = windows.split('    export CFLAGS=', 1)[0]
+        shell = """
+set -euo pipefail
+command() {
+    if [[ "$1" != -v ]]; then
+        builtin command "$@"
+        return
+    fi
+    case "$2" in
+        gcc|g++|ar|ranlib|cmake|pkg-config|make|nasm) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+""" + setup + '\nprintf "%s\\n" "$CC" "$CXX" "$AR" "$RANLIB"\n'
+        environment = dict(os.environ)
+        environment.pop("CROSS_COMPILE", None)
+        result = subprocess.run(
+            [shutil.which("bash"), "-c", shell], env=environment,
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(result.stdout.splitlines(), ["gcc", "g++", "ar", "ranlib"])
+        self.assertIn('-G "Unix Makefiles"', windows)
+        self.assertIn('--cross-prefix="$CROSS"', windows)
+        wrapper = (PACKAGING / "build-windows.ps1").read_text()
+        self.assertIn("mingw-w64-x86_64-binutils", wrapper)
+        self.assertIn('$env:PATH = "C:\\msys64\\mingw64\\bin;C:\\msys64\\usr\\bin;$env:PATH"', wrapper)
+
+    def test_actions_prepares_nasm_before_macos_build(self):
+        workflow = (PACKAGING.parent / ".github" / "workflows" / "package-release.yml").read_text()
+        prepare = workflow.index("- name: Prepare macOS native build tools")
+        build_step = workflow.index("- name: Build and mount-test macOS disk image")
+        self.assertLess(prepare, build_step)
+        self.assertIn("if: runner.os == 'macOS'", workflow[prepare:build_step])
+        self.assertIn("brew install cmake pkg-config nasm", workflow[prepare:build_step])
+
     def make_source_archive(self, directory, inputs, target, value, changes=None):
         manifest_bytes = (inputs / "ffmpeg.json").read_bytes()
         manifest = json.loads(manifest_bytes)

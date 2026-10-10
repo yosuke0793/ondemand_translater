@@ -14,7 +14,8 @@ Invoke-Checked $Python312 @("-c", "import sys,platform; assert sys.version_info[
 $MsysBash = "C:\msys64\usr\bin\bash.exe"
 if (-not (Test-Path $MsysBash)) { throw "MSYS2 is required at C:\msys64 for the native MINGW64 FFmpeg source build" }
 Invoke-Checked $MsysBash @("-lc", "pacman -Syu --noconfirm")
-Invoke-Checked $MsysBash @("-lc", "pacman -S --needed --noconfirm mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-pkgconf mingw-w64-x86_64-make nasm make")
+Invoke-Checked $MsysBash @("-lc", "pacman -S --needed --noconfirm mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-x86_64-cmake mingw-w64-x86_64-pkgconf mingw-w64-x86_64-make nasm make")
+$env:PATH = "C:\msys64\mingw64\bin;C:\msys64\usr\bin;$env:PATH"
 New-Item -ItemType Directory -Force "packaging/.work/tool-tmp" | Out-Null
 $env:TEMP = Join-Path (Get-Location) "packaging/.work/tool-tmp"
 $env:TMP = $env:TEMP

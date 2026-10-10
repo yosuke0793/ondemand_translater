@@ -56,8 +56,15 @@ if [[ "$TARGET" == macos-* ]]; then
     rm -f "$PREFIX/lib/pkgconfig/x264.pc.bak"
     FFMPEG_TARGET_FLAGS=(--enable-audiotoolbox --enable-videotoolbox --enable-avfoundation)
 elif [[ "$TARGET" == windows-x64 ]]; then
-    CROSS="${CROSS_COMPILE:-x86_64-w64-mingw32-}"
+    export PATH="/mingw64/bin:/usr/bin:$PATH"
+    CROSS="${CROSS_COMPILE:-}"
     export CC="${CROSS}gcc" CXX="${CROSS}g++" AR="${CROSS}ar" RANLIB="${CROSS}ranlib"
+    for tool in "$CC" "$CXX" "$AR" "$RANLIB" cmake pkg-config make nasm; do
+        command -v "$tool" >/dev/null || {
+            echo "Required MINGW64 build tool is missing: $tool" >&2
+            exit 1
+        }
+    done
     export CFLAGS="-O2 -I$PREFIX/include ${CFLAGS:-}"
     export LDFLAGS="-L$PREFIX/lib -static -static-libgcc -static-libstdc++ ${LDFLAGS:-}"
     extract_source zlib-1.3.1.tar.gz "$BUILD_DIR/zlib"
@@ -70,6 +77,7 @@ elif [[ "$TARGET" == windows-x64 ]]; then
     build_autotools fribidi-1.0.16.tar.xz "$BUILD_DIR/fribidi" --host=x86_64-w64-mingw32
     extract_source harfbuzz-10.4.0.tar.xz "$BUILD_DIR/harfbuzz"
     cmake -S "$BUILD_DIR/harfbuzz" -B "$BUILD_DIR/harfbuzz-build" \
+        -G "Unix Makefiles" \
         -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_PREFIX_PATH="$PREFIX" \
         -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_C_COMPILER="$CC" \
         -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_AR="$AR" -DCMAKE_RANLIB="$RANLIB" \

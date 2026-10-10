@@ -70,6 +70,10 @@ jobs:
             $process = Start-Process (Join-Path $installDir "unins000.exe") -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
             if ($process.ExitCode -ne 0) { throw "Uninstall failed: $($process.ExitCode)" }
           }
+      - name: Prepare macOS native build tools
+        if: runner.os == 'macOS'
+        shell: bash
+        run: brew install cmake pkg-config nasm
       - name: Build and mount-test macOS disk image
         if: runner.os == 'macOS'
         shell: bash

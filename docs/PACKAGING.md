@@ -32,6 +32,9 @@ and system `hdiutil`/`ditto`. Intel builds also require NASM. For example,
 `brew install cmake pkg-config nasm` supplies build tools, not the FFmpeg binary
 or its linked third-party libraries. The wrapper can install missing CMake
 through an existing Homebrew installation; otherwise it fails explicitly.
+GitHub Actions prepares CMake, pkg-config and NASM before invoking the macOS
+wrapper on both native runners. Local Intel builds must also install NASM;
+re-running an older workflow revision does not pick up this preparation step.
 
 ```bash
 PYTHON312=/absolute/path/to/python3.12 bash packaging/build-macos.sh
@@ -40,6 +43,10 @@ PYTHON312=/absolute/path/to/python3.12 bash packaging/build-macos.sh
 Windows prerequisites: CPython 3.12 x64 with Tcl/Tk, Inno Setup 6, and MSYS2
 installed at `C:\msys64`. The wrapper updates that MSYS2 installation and installs
 the MINGW64 GCC/CMake/pkgconf/make toolchain plus NASM and MSYS make using pacman.
+The native MINGW64 build uses `gcc`, `g++`, `ar` and `ranlib` from
+`C:\msys64\mingw64\bin`, rather than assuming cross-prefixed binutils aliases
+exist. That directory is placed before Git/Visual Studio tools on the build
+process PATH. The Windows HarfBuzz build explicitly uses Unix Makefiles.
 This changes the build machine's MSYS2 environment; use a dedicated build machine
 or the clean GitHub runner, not a shared development installation. A clean
 GitHub Windows runner provides Inno Setup; locally install it yourself and, if
