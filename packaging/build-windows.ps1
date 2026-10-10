@@ -11,6 +11,10 @@ function Invoke-Checked {
     if ($LASTEXITCODE -ne 0) { throw "Command failed ($LASTEXITCODE): $Program $Arguments" }
 }
 Invoke-Checked $Python312 @("-c", "import sys,platform; assert sys.version_info[:2] == (3,12) and platform.machine().lower() in ('amd64','x86_64'), 'CPython 3.12 x64 required'")
+$MsysBash = "C:\msys64\usr\bin\bash.exe"
+if (-not (Test-Path $MsysBash)) { throw "MSYS2 is required at C:\msys64 for the native MINGW64 FFmpeg source build" }
+Invoke-Checked $MsysBash @("-lc", "pacman -Syu --noconfirm")
+Invoke-Checked $MsysBash @("-lc", "pacman -S --needed --noconfirm mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-pkgconf mingw-w64-x86_64-make nasm make")
 New-Item -ItemType Directory -Force "packaging/.work/tool-tmp" | Out-Null
 $env:TEMP = Join-Path (Get-Location) "packaging/.work/tool-tmp"
 $env:TMP = $env:TEMP

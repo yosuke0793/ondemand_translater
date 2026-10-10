@@ -59,7 +59,7 @@ import importlib.util
 modules = (
     "faster_whisper",
     "argostranslate",
-    "edge_tts",
+    "piper",
     "requests",
     "cv2",
     "pytesseract",

@@ -38,12 +38,11 @@ ondemand_translater/
 └── source/worker/
     ├── standalone_app.py            Tkinter GUI、設定・用語CSV
     ├── app_runtime.py               同梱判定・資源・worker・FFmpegの解決
-    ├── bundled_worker.py            同梱変換workerとEdge TTSの入口
+    ├── bundled_worker.py            同梱変換workerの入口
     ├── credential_store.py          Keychain／Credential Manager
     ├── local_job_manager.py         SQLite、FIFO、子プロセス、進捗、成果物転送
     ├── run_standalone.sh            macOS等のPython起動
     ├── requirements.txt             標準依存
-    ├── requirements-xtts.txt         任意のXTTS関連依存
     ├── tests/test_local_job_manager.py
     ├── lecture_poc/
     │   ├── __main__.py              CLI引数とエラー表示
@@ -70,7 +69,7 @@ ondemand_translater/
 
 ソース版Windowsランナーは `TRANSLATE_WORKER_PYTHON` を `.venv\Scripts\python.exe` に、`PYTHONPATH` をworkerディレクトリに設定します。ソース版のexeだけをコピーしても動作しません。
 
-同梱版は凍結状態と資源の `BUNDLED` マーカーで識別し、旧Windowsビルドと区別します。workerは独立したPyInstallerプロセスとして起動し、外部Pythonの指定を除去します。プロンプトと `VERSION` は同梱資源から読みます。Edge TTSのCLIも同梱workerの `--edge-tts` 経由で起動し、システムの `edge-tts` や `python -m` には依存しません。両実行ファイルの `--bundle-self-test [report.json]` は画面・モデル取得・API通信なしで資源と依存のスモーク確認を行います。
+同梱版は凍結状態と資源の `BUNDLED` マーカーで識別し、旧Windowsビルドと区別します。workerは独立したPyInstallerプロセスとして起動し、外部Pythonの指定を除去します。プロンプトと `VERSION` は同梱資源から読みます。Piperは同梱モデルを使い、システムのTTSコマンドに依存しません。両実行ファイルの `--bundle-self-test [report.json]` は画面・モデル取得・外部API通信なしで資源と依存を検査し、workerは短いPiper音声を実際に生成します。
 
 ### ジョブのライフサイクル
 
@@ -236,7 +235,7 @@ Windowsでは `.venv\Scripts\python.exe` を使います。引数定義の正本
 | `--voice`、`--tts-volume`、`--tts-workers` | 音声・音量・音声生成並列数 |
 | `--tts-timing-mode` | `strict`／`no-overlap` |
 | `--subs-sync-mode` | `original`／`tts-aligned` |
-| `--tts-backend` | `edge-tts`／任意の `xtts-v2` |
+| `--tts-backend` | `piper`（既定）／`azure`（公式Azure AI Speech） |
 | `--embed-subs` | ソフト字幕出力。コンテナはmp4／mkv |
 | `--embed-subs-format` | mkv字幕のsrt／ass指定 |
 | `--burn-subs` | 焼き込み出力。`--embed-subs` と併用不可 |
@@ -244,7 +243,19 @@ Windowsでは `.venv\Scripts\python.exe` を使います。引数定義の正本
 | `--video-text-overlay` と関連引数 | 任意のOCR・映像テキスト置換。GUIでは無効 |
 | `--force` | 出力の再生成。再開用の字幕も上書き対象になり得るため注意 |
 
-OCRにはOpenCV・pytesseractのPython依存だけでなくTesseract本体・言語データ等の準備が必要です。XTTSは標準GUIで使わず、[requirements-xtts.txt](../source/worker/requirements-xtts.txt) とモデルの実行条件・利用許諾を確認してください。これらの任意機能やGPU動作を標準インストーラーの保証範囲として案内しないでください。
+OCRにはOpenCV・pytesseractのPython依存だけでなくTesseract本体・言語データ等の準備が必要です。同梱版からOCRは除外しています。XTTSと非公式Edge TTSは依存・CLI・自動フォールバックも含めて削除しました。GPU動作を標準インストーラーの保証範囲として案内しないでください。
+
+### 音声合成の設定と配布条件
+
+標準はPiper＋LJ Speechの米国英語女性音声です。Piper／eSpeak NGのGPLv3以降のライセンスと対応ソースを配布し、モデル作成者のパブリックドメイン表記・由来・ハッシュを保存します。大学教職員の講義英語化を想定しますが、非商用限定・研究限定モデルには依存しません。授業料や研究費の存在を理由に利用可能と断定するモデルは採用しません。詳細は[配布ガイド](PACKAGING.md)を参照してください。
+
+男女選択はPiperの女性 `en_US-ljspeech-medium` と男性 `en_US-john-medium`、Azureの女性 `en-US-AriaNeural` と男性 `en-US-AndrewNeural` 等を使います。Johnは作成者のページで米国英語男性・パブリックドメインと明記されたモデルです。GUIのラベルをモデル名へ解決し、ジョブと音声キャッシュメタデータに保存します。登録済みのジョブは選択変更の影響を受けません。
+
+Piperを直接importする同梱実行ファイルはGPLv3以降の組み合わせとして配布します。アプリの元のMIT表示は残しますが、同梱版全体をMITのみと案内しません。Piper・eSpeak NGに加え、実際に使ったアプリ／ビルドスクリプト／依存ロックの対応ソースも配布物に含めます。WindowsインストーラーもGPL本文と元のMIT表示を併記します。
+
+Azureは `--tts-backend azure` を使い、`AZURE_SPEECH_KEY` と `AZURE_SPEECH_REGION` をworker環境変数へ渡します。キーはOS資格情報ストア、リージョンは非秘密の設定です。CLIでは利用者が環境変数を設定します。キーを引数やJSONへ書きません。Piper選択時はGUIが起動するworkerからAzureのキー・リージョンを除去します。キーとリージョンは実行時にも検査し、失敗時は別バックエンドへ切り替えません。Piperの男性音声をCLIで使う例は `--tts-backend piper --voice en_US-john-medium`、Azureの男性音声は `--tts-backend azure --voice en-US-AndrewNeural` です。既定の女性音声はそれぞれ `en_US-ljspeech-medium`／`en-US-AriaNeural` です。
+
+旧版の待機ジョブに記録された音声・バックエンドは引き継げない場合があります。旧Edge／XTTSの指定を黙って変換せず、キャンセルして新しい方式で再登録してください。
 
 ### CLIの途中再開
 
@@ -274,13 +285,17 @@ CLIは `final.mp4`、字幕選択時の `final_soft_sub.mp4`／`final_sub.mp4` �
 
 Geminiのモデル可用性はAPI側に依存します。モデル名を変更した際は、フォールバック・モデル取得の動作も確認してください。DeepLの現行送信先は `api-free.deepl.com` です。Pro用エンドポイント切替をGUIの既存機能として案内しないでください。
 
-`settings.json` は出力先と音声を保持します。翻訳バックエンド・文字起こしプリセットは起動時に既定へ戻ります。専門用語は既定CSVとユーザー追加CSVをマージし、重複を除きます。ジョブ用Whisperプロンプトは整形・長さ制限（現行480文字）の対象で、全用語を必ず反映するわけではありません。
+`settings.json` は出力先・音声とAPIキー画面の起動時表示設定を保持します。`hide_api_keys_on_startup` は文字列 `"true"`／`"false"` で保存し、未設定時は画面を表示します。表示はGUI構築後の `after_idle` で行い、「次回から表示しない」の変更時に保存します。翻訳バックエンド・文字起こしプリセットは起動時に既定へ戻ります。専門用語は既定CSVとユーザー追加CSVをマージし、重複を除きます。ジョブ用Whisperプロンプトは整形・長さ制限（現行480文字）の対象で、全用語を必ず反映するわけではありません。
 
 GUIの「APIキー設定」はmacOS KeychainまたはWindows Credential Managerだけを使います。平文ファイルへの代替保存はありません。環境変数のキーがあればOS保存値より優先します。サービス名は `TranslateService`、保存名は `GEMINI_API_KEY`／`DEEPL_API_KEY` です。キーはジョブJSON・引数・設定ファイルには保存せず、実行時に選択サービスのキーだけを子プロセス環境へ渡します。CLI単独では従来どおり環境変数を設定します。バックエンド障害の文面にキーが含まれる可能性があるため、その例外文面をGUIやログへ転記しないでください。
 
 ## 6. 成果物とクリーンアップ契約
 
 ### ジョブデータ
+
+チェック対象の履歴削除は `delete_jobs()` を使用し、停止済みジョブのみ許可します。対象のログ・管理JSON・中間データ・DB行を削除しますが、全ジョブの完成動画／出力字幕を保護します。一覧はJob IDをTreeviewのitem IDとして更新し、チェック状態・行選択を毎秒の更新で失わないようにします。
+
+GUIの一括中間削除は `delete_job_intermediates()` を使用します。登録済みの終端状態ジョブだけを対象とし、実行処理中または非終端状態があると拒否します。登録と削除は同じマネージャーロックで排他制御します。DB・管理JSON・ログ・登録済み全ジョブの完成動画／出力字幕は保持し、外部ディレクトリへのsymlinkは辿りません。別インスタンスとの排他制御はないため、利用者には他のインスタンスを終了するよう案内します。
 
 | データ | 用途 |
 |---|---|
@@ -423,12 +438,12 @@ git pull --ff-only
 
 ## 9. 保守上の注意と既知の制限
 
-- GUIは固定のEdge TTS・英語音声、MP4字幕埋め込みを使います。CLIの任意機能をGUIの機能と混同しないでください。
+- GUIはPiper／Azure AI Speechを選択でき、MP4字幕埋め込みを使います。CLIの任意機能をGUIの機能と混同しないでください。
 - 字幕埋め込みが失敗した場合、パイプラインは焼き込みへフォールバックします。FFmpegのlibass等が必要になる場合があります。
 - 同名出力には上書き確認や世代管理がありません。出力名衝突のテストとユーザーへの警告を維持します。
 - GUIにはエラー詳細を開く専用ボタン、履歴削除、既存ジョブ再試行、料金上限管理がありません。
-- 文字起こしはfaster-whisper、翻訳は選択したバックエンド、音声はEdge TTS。実行がローカルでもサービス通信はあります。
-- Edge TTSは非公式インターフェースのため、提供元の変更の影響を受ける可能性があります。
+- 文字起こしはfaster-whisper、翻訳は選択したバックエンド、音声はPiperまたは公式Azure。クラウド方式を選ぶとサービス通信があります。
+- Azureには契約・キー・リージョン・料金の確認が必要です。アプリ内に課金上限はありません。
 - 既定の工学用語CSVは通常起動で利用しますが、Windows凍結GUIのリソース解決はビルド検証対象です。
 - `security.py` は一部の秘密表現をマスクしますが、全ログが機密を含まない保証はありません。ログ共有前に確認します。
 - 現行のスクリプトは実行時に依存・外部サービスの可用性に左右されます。ドキュメント上の対応対象と、実際の検証結果を分けて記録します。

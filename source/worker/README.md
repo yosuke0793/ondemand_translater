@@ -13,7 +13,7 @@
 | 起動・変換エラーの調査 | [トラブルシューティング](../../docs/TROUBLESHOOTING.md) |
 | CLI・環境構築・テスト・ビルド | [開発者ガイド](../../docs/DEVELOPER_GUIDE.md) |
 
-主要な入口は [standalone_app.py](standalone_app.py)、[local_job_manager.py](local_job_manager.py)、[lecture_poc/__main__.py](lecture_poc/__main__.py) です。依存関係は [requirements.txt](requirements.txt)、任意のXTTS関連依存は [requirements-xtts.txt](requirements-xtts.txt) を参照してください。
+主要な入口は [standalone_app.py](standalone_app.py)、[local_job_manager.py](local_job_manager.py)、[lecture_poc/__main__.py](lecture_poc/__main__.py) です。依存関係は [requirements.txt](requirements.txt) を参照してください。音声合成はPiper（標準・ローカル）とAzure AI Speech（公式API）を選べます。非公式Edge TTSとXTTSは削除しました。
 
 現行GUIはローカル子プロセスで変換します。同梱版は [bundled_worker.py](bundled_worker.py) を凍結したworker、ソース版は仮想環境のPythonを使います。[app_runtime.py](app_runtime.py) が資源と実行経路を分け、[credential_store.py](credential_store.py) がGUIで入力したAPIキーをOSの安全な保存先へ保管します。同梱版のビルドとGitHub Releasesは[配布ガイド](../../docs/PACKAGING.md)を参照してください。旧worker／Slurm構成のジョブ投入・DB移行手順は適用しません。[bin/](bin/) の既存ツールは使用前に対象パスとスキーマを確認してください。
 

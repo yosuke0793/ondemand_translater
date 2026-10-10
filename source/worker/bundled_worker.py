@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import multiprocessing
-import runpy
 import sys
 from pathlib import Path
 
@@ -19,10 +18,6 @@ def main() -> int:
     if sys.argv[1:2] == ["--bundle-self-test"] and len(sys.argv) <= 3:
         return bundle_self_test("worker", Path(sys.argv[2]) if len(sys.argv) == 3 else None)
     configure_runtime()
-    if sys.argv[1:2] == ["--edge-tts"]:
-        del sys.argv[1]
-        runpy.run_module("edge_tts", run_name="__main__")
-        return 0
     if is_bundled() and any(
         argument.split("=", 1)[0].startswith("--video-text-overlay")
         for argument in sys.argv[1:]

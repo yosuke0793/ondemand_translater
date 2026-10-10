@@ -27,13 +27,21 @@ revision is meaningful. Never put credentials, models, user media or databases
 in packaging inputs.
 
 macOS prerequisites: native CPython 3.12 including Tcl/Tk (python.org recommended),
-Xcode command-line tools (`codesign`, `otool`), and system `hdiutil`/`ditto`.
+Xcode command-line tools (`clang`, `make`, `codesign`, `otool`), CMake, pkg-config,
+and system `hdiutil`/`ditto`. Intel builds also require NASM. For example,
+`brew install cmake pkg-config nasm` supplies build tools, not the FFmpeg binary
+or its linked third-party libraries. The wrapper can install missing CMake
+through an existing Homebrew installation; otherwise it fails explicitly.
 
 ```bash
 PYTHON312=/absolute/path/to/python3.12 bash packaging/build-macos.sh
 ```
 
-Windows prerequisites: CPython 3.12 x64 with Tcl/Tk and Inno Setup 6. A clean
+Windows prerequisites: CPython 3.12 x64 with Tcl/Tk, Inno Setup 6, and MSYS2
+installed at `C:\msys64`. The wrapper updates that MSYS2 installation and installs
+the MINGW64 GCC/CMake/pkgconf/make toolchain plus NASM and MSYS make using pacman.
+This changes the build machine's MSYS2 environment; use a dedicated build machine
+or the clean GitHub runner, not a shared development installation. A clean
 GitHub Windows runner provides Inno Setup; locally install it yourself and, if
 needed, set `$env:ISCC` to its `ISCC.exe`.
 
@@ -45,15 +53,17 @@ Both wrappers delete/recreate **only** `packaging/.venv-build`, install the
 hash-locked native dependency set, run `pip check`, and build in
 `packaging/.work`. They do not reuse/copy the development `.venv`, existing app
 bundles, source data or old platform launchers. All build caches and scratch
-files stay under `packaging/.work`. Downloads are from public PyPI/upstream
-binary URLs; no source or credentials are uploaded by local build scripts.
+files stay under `packaging/.work`. Downloads are from public PyPI and the pinned
+upstream source URLs; no source or credentials are uploaded by local build scripts.
 The dedicated environment is required by `build.py build`; running that command
 from an unrelated environment fails.
 
 The wrappers require several GB of disk and may download substantial PyTorch,
-OpenCV and speech/translation dependencies. They do **not** download model
-weights. Online speech/model services, Argos language packs, optional Ollama,
-XTTS remain separate runtime features; "self-contained" means
+OpenCV and speech/translation dependencies. The bundled faster-whisper VAD
+ONNX assets are included; large Whisper transcription model weights are **not**
+downloaded during packaging. The pinned Piper LJ Speech female and John male voices are included for
+offline synthesis. Azure AI Speech, Argos language packs and optional Ollama
+remain separate runtime features; "self-contained" means
 the default application/runtime dependencies and media executables, not every
 optional service/model. CUDA drivers/libraries are not bundled; CPU is the
 portable baseline. Network/provider functionality needs separate acceptance
@@ -84,7 +94,7 @@ PyInstaller's internal resource root contains `BUNDLED`, `VERSION`, `version.jso
 `lecture_poc/prompts/` files and `third-party-notices/`. Both analyses include
 `source/worker` in their module search paths; the GUI analysis is lightweight
 and the worker analysis owns the conversion dependencies. Platform-specific
-keyring backends and `edge_tts.__main__` have explicit hidden imports. Compiled
+keyring backends and `piper.espeakbridge` have explicit hidden imports. Compiled
 Python modules and native dependency libraries are necessarily inside the
 bundle; the raw checkout/venv/tests/runtime data are not copied.
 The `BUNDLED` marker distinguishes this distribution from the legacy frozen
@@ -98,33 +108,145 @@ version files.
 
 ## Media binaries and license provenance
 
-`packaging/ffmpeg.json` pins uncompressed FFmpeg and ffprobe release assets from
-`eugeneware/ffmpeg-static` **b6.1.1**, for all three targets, with release-provided
-SHA-256 digests. The asset release label is not a promise about every underlying
-FFmpeg revision: captured `-version`/configuration output records actual binary
-provenance. Downloads fail closed on checksum mismatch.
+FFmpeg/ffprobe are now built from source for Windows x64 and both Mac CPUs.
+`packaging/ffmpeg.json` records exact source archives and SHA-256 hashes;
+downloads fail closed on hash mismatch. The build recipe uses a minimal GPLv3
+configuration with H.264/libx264, AAC, MP3 and libass subtitles. Nonfree
+components and unrequested optional codecs are excluded.
+
+The former `eugeneware/ffmpeg-static` Apple Silicon binary explicitly reports
+`Therefore it is not legally redistributable` under `-L`. Do not distribute
+existing installers/DMGs containing that binary, even for test users. Removing
+that message or copying different LICENSE text is not a remedy: rebuild from
+the permitted source configuration.
 
 Do **not** replace these with copied Homebrew executables: those often depend
 on developer-local dylibs. macOS staging rejects any linkage except `/usr/lib/`
 and `/System/Library/`. Each tool is launched natively during staging. Final
 bundle tests run with the bundled executable directory first and only OS tools
 in PATH, then encode/probe a synthetic H.264/AAC video and verify the `subtitles`
-filter. `drawtext` is not required because OCR text replacement is omitted.
-Windows statically linked upstream media tools
-are checked through actual execution in the clean hosted build.
+filter. Native staging also compares raw-frame hashes with and without subtitles
+to require actual text rendering, checks the H.264/AAC codecs and 1.5-second
+duration, and encodes MP3. `drawtext` is not required because OCR text replacement
+is omitted. Windows tools are statically linked from the same pinned sources;
+their DLL imports must be OS libraries and actual execution is checked in the
+clean hosted build.
 
-Upstream FFmpeg platform LICENSE/README, manifest hashes, captured build
-configuration/linkage, Python package inventory, wheel license/notice files,
-the dependency lock and application MIT license are retained in every bundle.
-**FFmpeg builds contain GPL components.** Their license does not become MIT
-because this application is MIT. Before publishing, arrange compliant
-**corresponding source** availability for the precise redistributed FFmpeg and
-enabled codec-library revisions, including build recipes/configuration. Merely
-pointing at latest FFmpeg source is insufficient. Review the pinned upstream
-release/build repository and [FFmpeg legal guidance](https://ffmpeg.org/legal.html);
-obtain/archive the exact sources from the binary provider if necessary. Source
-compliance is a maintainer release gate, not an automated claim by this pipeline.
-Review any wheel that lacks complete bundled license texts as well.
+Bundle checks invoke both tools with `-version` and `-L`, reject nonfree or
+unredistributable reports, and require the configured GPLv3 license. Source
+builds capture the tool versions, actual build configuration, linkage and
+license texts. Each target produces a **corresponding-source archive** next to
+the binaries, containing exact original source archives of FFmpeg and enabled
+libraries, the recipe/manifest and actual build records.
+
+Publish `TranslateService-<version>-<target>-ffmpeg-source.tar.gz` with that
+target's installer/DMG and keep it accessible for the binary recipients. It is
+not the GitHub automatically generated application "Source code (zip)".
+Checksums cover it; the release gate refuses missing/mismatched source archives
+or nonfree build metadata. The gate also inspects the archive without extracting
+it: original source hashes, exact tracked manifest/recipes, target/version,
+binary-hash records and configure/build logs must agree. Review the source contents and
+[FFmpeg legal guidance](https://ffmpeg.org/legal.html) before publishing.
+An archive/checksum gate detects technical omissions, not every legal issue:
+obligations for enabled libraries, codec patents and other application
+dependencies still require review. GPL does not automatically change the
+license of the separately executed application into GPL.
+
+Python package inventory, wheel license/notice files, dependency lock and the
+application MIT license remain in every bundle. Review wheels missing required
+license texts. Unofficial Edge TTS and XTTS have been removed; Azure AI Speech
+uses the customer's official Speech resource. Production signing/notarization
+and review of other dependencies remain separate requirements.
+
+## Local Piper and official Azure Speech
+
+The default voice is `en_US-ljspeech-medium`, used by pinned `piper-tts` 1.3.0.
+The model, its JSON configuration, model card and license-evidence text are bundled and SHA-256
+verified. The model creator, Bryce Beattie, labels this LJ Speech model public
+domain on the [creator's distribution page](https://brycebeattie.com/files/tts/).
+The dataset's public-domain statement and the model creator's statement are
+distinct pieces of provenance; retain both. Do not substitute another Piper
+voice based on a repository-level MIT tag: each voice has its own model card
+and may have research-only or other restrictions.
+
+The male alternative is `en_US-john-medium` (John), explicitly described by
+the same creator as a US English male voice with public-domain licensing and
+LibriVox training recordings. Download its original model/config from the
+creator's URLs, verify the pinned SHA-256 values and retain the John-specific
+license evidence; do not assume another male model has the same permissions.
+Both voices are included in new frozen builds and both must pass offline
+synthesis self-tests. Selecting John loads its own model/config, not a
+pitch-shifted copy of LJ Speech. The default female voice and existing
+female-voice jobs remain unchanged.
+
+Piper and its embedded eSpeak NG are GPL-3.0-or-later. Because the frozen
+application imports Piper, do not rely on an independent-process exception or
+describe the combined frozen application as MIT-only. Provide GPLv3 terms and
+the corresponding application/Piper/eSpeak source needed to rebuild the
+distributed combination, while retaining the original MIT copyright/license
+notices for application code. University-internal, non-selling use does not
+justify ignoring obligations when copies are distributed outside the
+organization. The GPL does not automatically license the generated lecture
+video; permissions for lecture content and participants are separate.
+
+Publish `TranslateService-<version>-<target>-piper-source.tar.gz` alongside each
+binary and the FFmpeg source archive. It includes the exact pinned Piper and
+embedded eSpeak sources, build instructions and application build inputs.
+The release validator checks original source hashes, runtime/model provenance
+and matching manifest records, not just the outer archive checksum. The
+offline worker self-test synthesizes a short sentence into a nonempty WAV;
+model files alone are not proof that phonemization or inference works.
+
+In source mode, the pinned voice is prepared on first use in a per-user cache
+outside the checkout. `PIPER_MODEL_DIR` can point to a preprepared directory
+containing the exact verified model/config/card/license-evidence files. Frozen builds use only bundled
+assets; they do not download a missing/damaged model or silently select another.
+
+The alternative backend is the official Azure AI Speech REST API with the
+user's Speech resource key and region. Keys are not bundled, passed on command
+lines, or written to job metadata. GUI jobs inject only the selected service's
+credentials into the worker environment. Azure requests send English text for
+synthesis and may be billed; no automatic retry after ambiguous failures and
+no fallback to unofficial endpoints is performed. Azure live acceptance testing
+requires an authorized resource and is distinct from mocked request tests.
+See the [beginner configuration steps](INSTALL_BUNDLED.md#音声合成を選ぶpiperとazure-ai-speech).
+
+XTTS and unofficial Edge TTS are removed, including optional requirements,
+worker dispatch, fallback paths and locks. An old development environment may
+still contain packages installed by older versions; use a new dedicated build
+environment, rather than assuming installed-but-unused packages are absent.
+
+### Rebuilding the media tools from the corresponding source
+
+The archive contains `ffmpeg.json`, `sources/` (eight original archives: FFmpeg
+7.1.1, x264, LAME, libass, FreeType, FriBidi, HarfBuzz and zlib),
+`build-ffmpeg.sh`, `ffmpeg_source.py`, `build-info.json`, and `build/` records.
+Copyright/license texts remain in the original archives and are also copied
+into the application's `third-party-notices/ffmpeg/` directory. FreeType's FTL
+and GPL texts are included along with the distribution acknowledgement.
+
+Extract the source archive into a new directory. Install the native build
+prerequisites above, read `build-info.json` for the original configuration,
+and run the supplied shell recipe from the extracted directory:
+
+```bash
+# macOS: use macos-x64 on an Intel Mac.
+SOURCE_DIR="$PWD/sources" BUILD_DIR="$PWD/rebuild" PREFIX="$PWD/result" \
+  TARGET=macos-arm64 BUILD_JOBS=4 bash ./build-ffmpeg.sh
+```
+
+For Windows, open an **MSYS2 MINGW64** terminal, change to the extracted
+directory, and run the same command with `TARGET=windows-x64`. Ensure the
+MINGW64 compiler/CMake/pkgconf and MSYS make/NASM are installed first. Do not
+run the recipe in PowerShell or Git Bash. The result is `result/bin/ffmpeg`
+and `result/bin/ffprobe` (`.exe` on Windows). No original source patches are
+applied; the recipe records build-time adjustments, including x264 pkg-config
+flags. The archived Python module records the full application staging process;
+it is not a standalone replacement for the shell recipe outside the checkout.
+
+Run both tools with `-version` and `-L`, and retain the original source archive
+with any binary distribution. Rebuilding with different compiler/SDK versions
+or paths is not guaranteed to produce byte-identical executables.
 
 ## Dependency lock maintenance
 
@@ -169,6 +291,13 @@ graph, **not a byte-identical/reproducible-build guarantee**. Actions pins Pytho
 3.12.10 and action commits; review them for security updates.
 
 ## Validation and artifacts
+
+Distribution checks reject job databases (including WAL/SHM sidecars), job/log/
+queue/processing directories, user settings and custom glossary files anywhere
+in the bundle. Only explicitly selected application resources are collected.
+Existing history on a test PC comes from its external user data directory and
+is intentionally preserved across installations; do not clear it during build
+or app startup. Use a fresh user account/data directory for first-run testing.
 
 The worker spec collects faster-whisper package data, including both Silero VAD
 ONNX assets. These small voice-activity models are bundled; unlike Whisper
@@ -215,12 +344,13 @@ TranslateService-0.1.0-windows-x64-portable.zip
 TranslateService-0.1.0-macos-arm64.dmg
 TranslateService-0.1.0-macos-x64.dmg
 TranslateService-0.1.0-<target>-build-info.json
+TranslateService-0.1.0-<target>-ffmpeg-source.tar.gz
 TranslateService-0.1.0-<target>-SHA256SUMS.txt
 ```
 
 Build information records commit, native Python, lock/FFmpeg manifest hashes,
-and frozen smoke reports. Checksums cover each target's distributables and build
-information. Before handing binaries to users, verify hashes on a clean machine
+corresponding-source archive/hash and license policy, and frozen smoke reports.
+Checksums cover each target's distributables, sources and build information. Before handing binaries to users, verify hashes on a clean machine
 without developer Python/FFmpeg, test GUI launch and credential-store behavior,
 and exercise a real conversion with provider access separately.
 

@@ -22,9 +22,154 @@ from standalone_app import (
 
 
 class LocalJobManagerTests(unittest.TestCase):
-    def test_voice_dropdown_labels_map_to_edge_tts_names(self) -> None:
+    def test_delete_selected_jobs_preserves_outputs_and_other_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            manager = LocalJobManager(root / "data")
+            source = root / "input.mp4"
+            source.write_bytes(b"original")
+            first = manager.register_job(source)
+            second = manager.register_job(source, output_directory=root / "exports")
+            manager.cancel(first)
+            first_dir = manager.jobs_dir / first
+            output = Path(manager.get_job(first)["output_video"])
+            output.write_bytes(b"completed")
+            output.with_suffix(".srt").write_bytes(b"subtitle")
+            (manager.logs_dir / f"{first}.log").write_bytes(b"log")
+            manager.delete_jobs([first])
+            self.assertIsNone(manager.get_job(first))
+            self.assertIsNotNone(manager.get_job(second))
+            self.assertEqual(output.read_bytes(), b"completed")
+            self.assertEqual(output.with_suffix(".srt").read_bytes(), b"subtitle")
+            self.assertFalse((first_dir / "input.mp4").exists())
+            self.assertFalse((manager.logs_dir / f"{first}.log").exists())
+            self.assertEqual(source.read_bytes(), b"original")
+            with self.assertRaises(RuntimeError):
+                manager.delete_jobs([second])
+            self.assertIsNotNone(manager.get_job(second))
+            manager.cancel(second)
+            manager._active_job_id = second
+            with self.assertRaises(RuntimeError):
+                manager.delete_jobs([second])
+
+    def test_delete_intermediates_preserves_history_logs_outputs_and_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            manager = LocalJobManager(root / "data")
+            source = root / "input.mp4"
+            source.write_bytes(b"original")
+            job_id = manager.register_job(source)
+            manager._update_status(job_id, "error")
+            job_dir = manager.jobs_dir / job_id
+            output = Path(manager.get_job(job_id)["output_video"])
+            preserved = [
+                output, output.with_suffix(".srt"), output.with_name(f"{output.stem}_ja.srt"),
+                job_dir / "pipeline.log", manager.logs_dir / f"{job_id}.log",
+                manager.data_dir / "settings.json", manager.data_dir / "engineering_terms_custom.csv",
+            ]
+            for path in preserved:
+                path.write_bytes(b"keep")
+            intermediates = [job_dir / "audio.wav", job_dir / "jp.srt", job_dir / "chunks" / "chunk.wav"]
+            for path in intermediates:
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(b"intermediate")
+            manager.delete_job_intermediates()
+            for path in preserved:
+                self.assertEqual(path.read_bytes(), b"keep")
+            self.assertTrue((job_dir / "status.json").is_file())
+            self.assertEqual(manager.get_job(job_id)["status"], "error")
+            self.assertEqual(source.read_bytes(), b"original")
+            for path in [job_dir / "input.mp4", *intermediates]:
+                self.assertFalse(path.exists())
+            self.assertEqual(manager.delete_job_intermediates(), 0)
+
+    def test_delete_intermediates_refuses_queued_running_and_active_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            manager = LocalJobManager(root / "data")
+            source = root / "input.mp4"
+            source.write_bytes(b"original")
+            job_id = manager.register_job(source)
+            for status in ("queued", "running"):
+                manager._update_status(job_id, status)
+                with self.assertRaisesRegex(RuntimeError, "処理中"):
+                    manager.delete_job_intermediates()
+            manager._update_status(job_id, "cancelled")
+            manager._active_job_id = job_id
+            with self.assertRaises(RuntimeError):
+                manager.delete_job_intermediates()
+            self.assertTrue((manager.jobs_dir / job_id / "input.mp4").exists())
+
+    def test_delete_intermediates_does_not_follow_symlinks_or_remove_other_jobs_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            manager = LocalJobManager(root / "data")
+            source = root / "input.mp4"
+            source.write_bytes(b"original")
+            first = manager.register_job(source)
+            first_dir = manager.jobs_dir / first
+            second = manager.register_job(source, output_directory=first_dir / "exports")
+            for job_id in (first, second):
+                manager._update_status(job_id, "done")
+            output = Path(manager.get_job(second)["output_video"])
+            output.write_bytes(b"completed")
+            outside = root / "external"
+            outside.mkdir()
+            (outside / "keep.wav").write_bytes(b"outside")
+            (first_dir / "external-link").symlink_to(outside, target_is_directory=True)
+            manager.delete_job_intermediates()
+            self.assertEqual(output.read_bytes(), b"completed")
+            self.assertEqual((outside / "keep.wav").read_bytes(), b"outside")
+
+    def test_delete_intermediates_reports_filesystem_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            manager = LocalJobManager(root / "data")
+            source = root / "input.mp4"
+            source.write_bytes(b"original")
+            job_id = manager.register_job(source)
+            manager._update_status(job_id, "done")
+            with patch.object(Path, "unlink", side_effect=OSError("permission denied")):
+                with self.assertRaisesRegex(RuntimeError, "削除に失敗"):
+                    manager.delete_job_intermediates()
+            self.assertIsNotNone(manager.get_job(job_id))
+
+    def test_new_user_has_no_history_and_reopening_preserves_existing_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            manager = LocalJobManager(root / "existing-user")
+            self.assertEqual(manager.get_jobs(), [])
+            source = root / "input.mp4"
+            source.write_bytes(b"input")
+            job_id = manager.register_job(source)
+            reopened = LocalJobManager(root / "existing-user")
+            self.assertIsNotNone(reopened.get_job(job_id))
+            new_user = LocalJobManager(root / "new-user")
+            self.assertEqual(new_user.get_jobs(), [])
+
+    def test_voice_dropdown_labels_map_to_azure_names(self) -> None:
         self.assertEqual(VOICE_OPTIONS[DEFAULT_VOICE_LABEL], "en-US-AriaNeural")
         self.assertIn('"en-US-AndrewNeural"', next(iter(VOICE_OPTIONS)))
+
+    def test_command_selects_piper_or_azure_and_rejects_removed_backends(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            manager = LocalJobManager(Path(temporary_dir))
+            for backend, voice in (("piper", "en_US-ljspeech-medium"), ("azure", "en-US-AriaNeural")):
+                command = manager._default_command({"options": {"tts_backend": backend}}, Path(temporary_dir))
+                self.assertEqual(command[command.index("--tts-backend") + 1], backend)
+                self.assertEqual(command[command.index("--voice") + 1], voice)
+                self.assertNotIn("AZURE_SPEECH_KEY", " ".join(command))
+            for backend, voice in (
+                ("piper", "en_US-ljspeech-medium"), ("piper", "en_US-john-medium"),
+                ("azure", "en-US-AriaNeural"), ("azure", "en-US-AndrewNeural"),
+            ):
+                command = manager._default_command(
+                    {"options": {"tts_backend": backend, "voice": voice}}, Path(temporary_dir),
+                )
+                self.assertEqual(command[command.index("--voice") + 1], voice)
+            for backend in ("edge-tts", "xtts-v2"):
+                with self.assertRaises(ValueError):
+                    manager._default_command({"options": {"tts_backend": backend}}, Path(temporary_dir))
 
     def test_preferences_are_saved_and_loaded(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:

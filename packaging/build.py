@@ -12,7 +12,6 @@ import re
 import shutil
 import subprocess
 import sys
-import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -20,6 +19,14 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGING = ROOT / "packaging"
 WORK = PACKAGING / ".work"
 ARTIFACTS = PACKAGING / "artifacts"
+sys.path.insert(0, str(ROOT / "source" / "worker"))
+sys.path.insert(0, str(PACKAGING))
+from media_license import validate_ffmpeg_license
+from piper_model import (
+    DEFAULT_VOICE, MODEL_MANIFEST, MODEL_STAGE, load_model_manifest,
+    model_metadata, stage_model, supported_voices,
+)
+from piper_source import copy_piper_notices, stage_piper_source
 
 
 def version(expected_tag: str | None = None) -> str:
@@ -60,50 +67,10 @@ def sha256(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def download(url: str, destination: Path, digest: str) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.is_file() and sha256(destination) == digest:
-        return
-    partial = destination.with_suffix(destination.suffix + ".partial")
-    try:
-        request = urllib.request.Request(url, headers={"User-Agent": "TranslateService-packaging"})
-        with urllib.request.urlopen(request, timeout=120) as response, partial.open("wb") as output:
-            shutil.copyfileobj(response, output)
-        if sha256(partial) != digest:
-            raise RuntimeError(f"Checksum mismatch for public upstream asset: {url}")
-        partial.replace(destination)
-    finally:
-        partial.unlink(missing_ok=True)
+def stage_ffmpeg(target: str) -> dict:
+    from ffmpeg_source import stage_ffmpeg as build_media
 
-
-def stage_ffmpeg(target: str) -> None:
-    manifest = json.loads((PACKAGING / "ffmpeg.json").read_text(encoding="utf-8"))
-    binary_dir = WORK / "ffmpeg" / target
-    notices = WORK / "notices" / "ffmpeg"
-    notices.mkdir(parents=True, exist_ok=True)
-    for asset, digest in manifest["targets"][target].items():
-        cached = WORK / "upstream" / asset
-        download(manifest["base_url"] + asset, cached, digest)
-        if asset.startswith(("ffmpeg-", "ffprobe-")):
-            name = asset.split("-")[0] + (".exe" if target.startswith("windows") else "")
-            destination = binary_dir / name
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(cached, destination)
-            destination.chmod(0o755)
-            result = run([str(destination), "-version"], capture_output=True, text=True)
-            (notices / f"{name}-build-configuration.txt").write_text(
-                result.stdout + result.stderr, encoding="utf-8"
-            )
-            if target.startswith("macos"):
-                linkage = run(["otool", "-L", str(destination)], capture_output=True, text=True).stdout
-                for line in linkage.splitlines()[1:]:
-                    dependency = line.strip().split(" (", 1)[0]
-                    if not dependency.startswith(("/usr/lib/", "/System/Library/")):
-                        raise RuntimeError(f"FFmpeg depends on an unbundled non-system library: {dependency}")
-                (notices / f"{name}-linkage.txt").write_text(linkage, encoding="utf-8")
-        else:
-            shutil.copy2(cached, notices / asset)
-    shutil.copy2(PACKAGING / "ffmpeg.json", notices / "upstream-sha256.json")
+    return build_media(target, version())
 
 
 def generate_metadata(target: str) -> None:
@@ -134,6 +101,18 @@ def generate_metadata(target: str) -> None:
     shutil.copy2(ROOT / "LICENSE", notices / "TranslateService-LICENSE.txt")
     shutil.copy2(PACKAGING / "THIRD_PARTY_NOTICES.txt", notices / "THIRD_PARTY_NOTICES.txt")
     shutil.copy2(PACKAGING / "locks" / f"{target}.txt", notices / "dependency-lock.txt")
+    shutil.copy2(MODEL_MANIFEST, notices / "piper_model.json")
+    copy_piper_notices(notices / "piper")
+    (notices / "TranslateService-BUNDLED-LICENSE.txt").write_text(
+        "TranslateService Piper-enabled frozen distribution\n"
+        "The combined distribution is provided under GPL-3.0-or-later.\n"
+        "Original MIT notices for application components are retained below.\n"
+        "See THIRD_PARTY_NOTICES.txt and the matching Piper and FFmpeg source archives.\n\n"
+        + (notices / "piper" / "COPYING").read_text(encoding="utf-8")
+        + "\n\nOriginal application component license:\n"
+        + (ROOT / "LICENSE").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     distributions = []
     for distribution in sorted(importlib.metadata.distributions(), key=lambda item: item.name.lower()):
         distributions.append({"name": distribution.name, "version": distribution.version,
@@ -181,8 +160,30 @@ def verify_media_tools(binary_dir: Path, target: str, test_dir: Path, environmen
     fixture.unlink()
 
 
+def verify_no_private_data(bundle: Path) -> None:
+    forbidden = {
+        ".env", ".venv", "jobs.db", "jobs.db-wal", "jobs.db-shm",
+        "settings.json", "engineering_terms_custom.csv", "uploads", "jobs",
+        "logs", "queue", "processing",
+    }
+    for path in bundle.rglob("*"):
+        if path.name in forbidden:
+            raise RuntimeError(f"Forbidden runtime/private file in bundle: {path.relative_to(bundle)}")
+
+
 def verify_bundle(bundle: Path, target: str) -> list[dict]:
     bundle = bundle.resolve()
+    verify_no_private_data(bundle)
+    manifest = load_model_manifest()
+    expected_models = [manifest["voice"], *manifest.get("additional_voices", [])]
+    model_directories = sorted({path.resolve() for path in bundle.rglob("piper-model") if path.is_dir()})
+    if len(model_directories) != 1:
+        raise RuntimeError(f"Expected one bundled offline Piper model directory, found {len(model_directories)}")
+    model_directory = model_directories[0]
+    for asset in (asset for model in expected_models for asset in model["files"]):
+        model_asset = model_directory / asset["name"]
+        if not model_asset.is_file() or sha256(model_asset) != asset["sha256"]:
+            raise RuntimeError(f"Bundled Piper model asset is missing or has the wrong hash: {asset['name']}")
     binary_dir = executable_dir(bundle)
     suffix = ".exe" if target.startswith("windows") else ""
     for name in ("TranslateService", "TranslateWorker", "ffmpeg", "ffprobe"):
@@ -203,6 +204,13 @@ def verify_bundle(bundle: Path, target: str) -> list[dict]:
         TMPDIR=str(test_dir), TMP=str(test_dir), TEMP=str(test_dir),
     )
     reports = []
+    for name in ("ffmpeg", "ffprobe"):
+        binary = str(binary_dir / f"{name}{suffix}")
+        config = run([binary, "-version"], cwd=test_dir, env=environment, capture_output=True, text=True)
+        license_result = run([binary, "-L"], cwd=test_dir, env=environment, capture_output=True, text=True)
+        validate_ffmpeg_license(
+            config.stdout + config.stderr, license_result.stdout + license_result.stderr,
+        )
     for name, role in (("TranslateService", "gui"), ("TranslateWorker", "worker")):
         report = test_dir / f"{role}.json"
         report.unlink(missing_ok=True)
@@ -213,15 +221,30 @@ def verify_bundle(bundle: Path, target: str) -> list[dict]:
             raise RuntimeError(f"Invalid frozen self-test report: {payload}")
         if set(payload.get("tools", {})) != {"ffmpeg", "ffprobe"}:
             raise RuntimeError(f"Missing frozen tool results: {payload}")
+        if role == "worker":
+            piper = payload.get("piper", {})
+            if (
+                piper.get("voice") != DEFAULT_VOICE
+                or not isinstance(piper.get("wav_duration_seconds"), (float, int))
+                or isinstance(piper["wav_duration_seconds"], bool)
+                or not 0 < piper["wav_duration_seconds"] < float("inf")
+            ):
+                raise RuntimeError(f"Frozen Piper offline synthesis failed: {payload}")
+            voices = piper.get("voices", {})
+            if not isinstance(voices, dict) or set(voices) != set(supported_voices()):
+                raise RuntimeError(f"Frozen Piper offline voice results are incomplete: {payload}")
+            for voice, result in voices.items():
+                if (not isinstance(result, dict) or result.get("voice") != voice
+                        or not isinstance(result.get("wav_duration_seconds"), (float, int))
+                        or isinstance(result["wav_duration_seconds"], bool)
+                        or not 0 < result["wav_duration_seconds"] < float("inf")):
+                    raise RuntimeError(f"Frozen Piper offline synthesis failed for {voice}: {payload}")
         reports.append(payload)
     worker_help = run([str(binary_dir / f"TranslateWorker{suffix}"), "--help"],
                       cwd=test_dir, env=environment, capture_output=True, text=True, encoding="utf-8", timeout=60)
     if "--input" not in worker_help.stdout or "--outdir" not in worker_help.stdout:
         raise RuntimeError("Frozen worker did not expose the lecture_poc CLI")
     verify_media_tools(binary_dir, target, test_dir, environment)
-    for path in bundle.rglob("*"):
-        if path.name in (".env", ".venv", "jobs.db", "settings.json", "uploads", "jobs"):
-            raise RuntimeError(f"Forbidden runtime/private file in bundle: {path.relative_to(bundle)}")
     return reports
 
 
@@ -260,14 +283,31 @@ def build(target: str) -> None:
     for name in ("standalone_app.py", "bundled_worker.py", "app_runtime.py", "credential_store.py"):
         if not (ROOT / "source" / "worker" / name).is_file():
             raise RuntimeError(f"Missing source entrypoint/runtime: {name}")
-    shutil.rmtree(WORK / "notices", ignore_errors=True)
-    stage_ffmpeg(target)
-    generate_metadata(target)
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
-    # Remove stale output so a failed/new build cannot accidentally upload old assets.
+    # Remove stale output before any native step can fail.
     for path in ARTIFACTS.iterdir():
         if path.is_file():
             path.unlink()
+    shutil.rmtree(WORK / "notices", ignore_errors=True)
+    media_info = stage_ffmpeg(target)
+    stage_model(MODEL_STAGE)
+    model_manifest = load_model_manifest()
+    piper_source = stage_piper_source()
+    piper_source_name = f"TranslateService-{version()}-{target}-piper-source.tar.gz"
+    generate_metadata(target)
+    source_archive = Path(media_info["source_archive"])
+    source_name = f"TranslateService-{version()}-{target}-ffmpeg-source.tar.gz"
+    if source_archive.name != source_name or not source_archive.is_file():
+        raise RuntimeError("Missing corresponding FFmpeg source archive")
+    if sha256(source_archive) != media_info["source_sha256"]:
+        raise RuntimeError("Corresponding FFmpeg source archive hash mismatch")
+    if (media_info["license"], media_info["nonfree"]) != ("GPL-3.0-or-later", False):
+        raise RuntimeError("FFmpeg source build license policy mismatch")
+    shutil.copy2(source_archive, ARTIFACTS / source_name)
+    if not piper_source.is_file():
+        raise RuntimeError("Missing Piper/eSpeak-NG corresponding source archive")
+    piper_source_sha256 = sha256(piper_source)
+    shutil.copy2(piper_source, ARTIFACTS / piper_source_name)
     run([sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm",
          "--workpath", str(WORK / "pyinstaller"), "--distpath", str(WORK / "dist"),
          str(PACKAGING / "TranslateService.spec")], cwd=ROOT)
@@ -300,6 +340,22 @@ def build(target: str) -> None:
                     "python": sys.version, "self_tests": reports,
                     "dependency_lock_sha256": sha256(PACKAGING / "locks" / f"{target}.txt"),
                     "ffmpeg_manifest_sha256": sha256(PACKAGING / "ffmpeg.json"),
+                    "piper": {
+                        "runtime": f'{model_manifest["runtime"]["distribution"]}=='
+                        f'{model_manifest["runtime"]["version"]}',
+                        "license": model_manifest["runtime"]["license"],
+                        "source_archive": piper_source_name,
+                        "source_sha256": piper_source_sha256,
+                        "source_manifest_sha256": sha256(
+                            WORK / "piper-source" / "source-manifest.json"
+                        ),
+                        "model": model_metadata(model_manifest["voice"]),
+                        "additional_models": [
+                            model_metadata(model)
+                            for model in model_manifest.get("additional_voices", [])
+                        ],
+                    },
+                    "ffmpeg": {**media_info, "source_archive": source_name},
                     "signed_for_distribution": False}, indent=2) + "\n", encoding="utf-8"
     )
     checksum_file = ARTIFACTS / f"{prefix}-SHA256SUMS.txt"

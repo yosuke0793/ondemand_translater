@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .pipeline import PipelineConfig, PipelineStepError, run_pipeline
 from .security import redact_secrets
+from .tts import TTSError, validate_tts_settings
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,12 +35,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Whisper initial_prompt を読み込むテキストファイル。未指定時は既定パスを参照",
     )
-    parser.add_argument("--voice", default="en-US-AriaNeural", help="edge-tts の音声名")
+    parser.add_argument(
+        "--voice", default=None,
+        help="音声名。Piper: 女性 en_US-ljspeech-medium（既定）／男性 en_US-john-medium。"
+        "Azure: 女性 en-US-AriaNeural（既定）／男性 en-US-AndrewNeural など",
+    )
     parser.add_argument(
         "--tts-workers",
         type=int,
         default=1,
-        help="edge-tts の並列実行数。0 で自動設定（既定値は 1）",
+        help="音声合成の並列実行数。0 で自動設定（既定値は 1）",
     )
     parser.add_argument(
         "--tts-timing-mode",
@@ -49,9 +54,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--tts-backend",
-        choices=("edge-tts", "xtts-v2"),
-        default="edge-tts",
-        help="英語音声合成バックエンド。既定は edge-tts、XTTS v2 は xtts-v2 を指定",
+        choices=("piper", "azure"),
+        default="piper",
+        help="英語音声合成。既定はローカル Piper、azure は公式 Azure AI Speech（有料）",
     )
     parser.add_argument(
         "--subs-sync-mode",
@@ -62,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--tts-volume",
         default="+100%",
-        help="edge-tts の音量（例: +100%% で約2倍、+200%% で約3倍）",
+        help="吹き替え音量（例: +100%% で約2倍、+200%% で約3倍）",
     )
     parser.add_argument(
         "--chunk-seconds",
@@ -205,7 +210,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def ensure_python_dependencies(translation_backend: str, video_text_overlay: bool, tts_backend: str) -> None:
-    required_modules = ["faster_whisper", "edge_tts"]
+    if tts_backend not in {"piper", "azure"}:
+        raise ModuleNotFoundError("TTS backend must be piper or azure.")
+    required_modules = ["faster_whisper", "piper" if tts_backend == "piper" else "requests"]
     if translation_backend == "argos":
         required_modules.append("argostranslate")
     elif translation_backend in {"deepl", "gemini"}:
@@ -246,8 +253,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
+        args.voice = validate_tts_settings(args.tts_backend, args.voice, args.tts_volume)
         ensure_python_dependencies(args.translation_backend, args.video_text_overlay, args.tts_backend)
-    except ModuleNotFoundError as exc:
+    except (ModuleNotFoundError, TTSError) as exc:
         print(redact_secrets(exc), file=sys.stderr)
         return 1
 

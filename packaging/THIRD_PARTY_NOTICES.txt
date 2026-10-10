@@ -1,26 +1,36 @@
 TranslateService distribution notices
 ====================================
 
-TranslateService is MIT licensed; see TranslateService-LICENSE.txt.
+TranslateService GUI/source components are MIT licensed; see
+TranslateService-LICENSE.txt. TranslateWorker bundles Piper and its
+GPL-licensed eSpeak-NG bridge; the worker and complete distribution therefore
+include components not covered by the application's MIT license.
 The separately executed FFmpeg/ffprobe programs are NOT covered by that license.
 
 FFmpeg / ffprobe
 ---------------
-Unmodified static binaries and upstream license/readme texts are downloaded
-from the versioned b6.1.1 release of eugeneware/ffmpeg-static:
-https://github.com/eugeneware/ffmpeg-static/releases/tag/b6.1.1
-Build recipes and upstream references:
-https://github.com/eugeneware/ffmpeg-static
+FFmpeg and ffprobe are built from hash-pinned upstream source archives,
+with GPLv3 enabled and nonfree components forbidden. They are separately
+executed programs; the application's MIT license does not replace their GPL.
+Sources, versions, license texts and the build recipe are recorded in
+ffmpeg/source-manifest.json and the accompanying corresponding-source archive.
+Upstream references:
 https://ffmpeg.org/legal.html
 https://ffmpeg.org/download.html
 
-See ffmpeg/upstream-sha256.json for exact artifact URLs/digests and the
-platform LICENSE, README and captured binary build-configuration texts.
-These builds include GPL components. Do not represent the entire bundle
-as MIT-only. A release maintainer must arrange compliant corresponding
-source availability (including enabled codec libraries and build recipes)
-for redistributed binaries, not merely link to the latest FFmpeg source.
-An upstream URL alone is not a complete GPL source-distribution commitment.
+Each release includes TranslateService-<version>-<target>-ffmpeg-source.tar.gz
+next to its platform installer/DMG. Keep that archive available with the
+binaries; it contains the exact original source archives, recipe and build
+records for FFmpeg and its enabled external libraries. See the bundled
+ffmpeg notices for copyright/license texts. A URL to latest upstream sources
+alone is not a substitute. Do not describe the complete bundle as MIT-only.
+FreeType is used under the FreeType License (FTL); its complete license is
+included under ffmpeg/freetype-2.13.3.tar.xz/docs/FTL.TXT.
+Portions of this software are copyright (C) 2024 The FreeType Project
+(www.freetype.org). All rights reserved.
+The former eugeneware/ffmpeg-static Apple Silicon binary reports that it
+contains nonfree parts and is not legally redistributable; do not distribute
+old artifacts built with that binary.
 Draft releases are for review; do not publish until licensing obligations
 and the security/signing checklist in docs/PACKAGING.md have been reviewed.
 
@@ -31,5 +41,39 @@ metadata. Wheel-provided license/notice texts are retained under python/.
 dependency-lock.txt records the hash-locked native build dependency graph.
 Some upstream wheels do not include full license texts; review their
 metadata and obtain any missing required notices before public publication.
-Model weights, language packs and optional XTTS/Tesseract/Ollama installations
-are not included and have separate licenses.
+
+Piper text-to-speech
+--------------------
+The offline Piper runtime (piper-tts 1.3.0) is licensed under
+GPL-3.0-or-later. Piper's espeakbridge extension statically links eSpeak-NG,
+also GPL-3.0-or-later. The required corresponding source, including exact
+hash-pinned Piper/eSpeak-NG source archives, the source manifest, and the
+allowlisted application/build source with SHA-256 inventory, is
+distributed beside each platform artifact as
+TranslateService-<version>-<target>-piper-source.tar.gz. Do not distribute a
+Piper-enabled binary without its matching source archive and the required GPL
+license texts. Piper and eSpeak-NG license texts from their exact source
+revisions are included under third-party-notices/piper/. Piper package notices
+and license files are retained under third-party-notices/python/ when supplied
+by their wheels.
+
+Piper is imported into and linked with the frozen TranslateWorker. Accordingly,
+the Piper-enabled combined worker distribution is provided under
+GPL-3.0-or-later. The root MIT license continues to apply to separately
+applicable components; it is not a blanket MIT-only license for this combined
+distribution. The root LICENSE and the complete allowlisted application source
+are included in the corresponding-source archive.
+
+The bundled offline voice is en_US-ljspeech-medium, trained by Bryce Beattie
+using the LJ Speech Dataset. The creator identifies the model as public domain;
+its model card also identifies the underlying recordings as public domain.
+The exact model, configuration and model card are hash-pinned in
+piper_model.json and included in the offline application bundle together with
+the license/provenance evidence. The pinned Hugging Face model files are not
+claimed to be byte-identical to the creator page's separate mv2 model downloads.
+Provenance:
+https://brycebeattie.com/files/tts/
+https://huggingface.co/rhasspy/piper-voices/tree/c10ece1aade47bb51c153c893d14e5bf8e5b7117/en/en_US/ljspeech/medium
+
+Argos language packs and optional Tesseract/Ollama installations are not
+included and have separate licenses.

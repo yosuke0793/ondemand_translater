@@ -9,15 +9,17 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from contextlib import redirect_stderr
 
 import app_runtime
 import bundled_worker
+from media_license import validate_ffmpeg_license
 from credential_store import CredentialError, CredentialStore, SERVICE_NAME
-from lecture_poc.pipeline import get_edge_tts_command
+from lecture_poc.security import redact_secrets
 from local_job_manager import LocalJobManager
-from standalone_app import StandaloneApp
+from standalone_app import StandaloneApp, TTS_BACKENDS, PIPER_VOICE_OPTIONS, VOICE_OPTIONS, load_preferences
 
 
 class MemoryBackend:
@@ -35,6 +37,73 @@ class MemoryBackend:
 
 
 class CredentialStoreTests(unittest.TestCase):
+    def test_azure_key_and_subscription_headers_are_redacted(self) -> None:
+        for value in (
+            "AZURE_SPEECH_KEY=sentinel-secret",
+            "Ocp-Apim-Subscription-Key: sentinel-secret",
+            '{"Ocp-Apim-Subscription-Key": "sentinel-secret"}',
+            '{"AZURE_SPEECH_KEY": "sentinel-secret"}',
+        ):
+            with self.subTest(value=value):
+                self.assertNotIn("sentinel-secret", redact_secrets(value))
+
+    def test_gui_cleanup_confirmation_and_errors(self) -> None:
+        app = Mock()
+        app.manager.delete_job_intermediates.return_value = 3
+        with patch("standalone_app.messagebox.askyesno", return_value=False):
+            StandaloneApp.delete_job_intermediates(app)
+        app.manager.delete_job_intermediates.assert_not_called()
+        with patch("standalone_app.messagebox.askyesno", return_value=True), patch(
+            "standalone_app.messagebox.showinfo"
+        ) as success:
+            StandaloneApp.delete_job_intermediates(app)
+            success.assert_called_once()
+        app.manager.delete_job_intermediates.side_effect = RuntimeError("処理中")
+        with patch("standalone_app.messagebox.askyesno", return_value=True), patch(
+            "standalone_app.messagebox.showerror"
+        ) as error, patch("standalone_app.messagebox.showinfo") as success:
+            StandaloneApp.delete_job_intermediates(app)
+            error.assert_called_once()
+            success.assert_not_called()
+
+    def test_startup_api_dialog_defaults_to_shown_and_can_be_disabled(self) -> None:
+        app = Mock()
+        app.hide_api_keys_on_startup.get.return_value = False
+        StandaloneApp._show_startup_api_keys(app)
+        app.configure_api_keys.assert_called_once_with()
+        app.configure_api_keys.reset_mock()
+        app.hide_api_keys_on_startup.get.return_value = True
+        StandaloneApp._show_startup_api_keys(app)
+        app.configure_api_keys.assert_not_called()
+
+    def test_startup_preference_survives_other_preference_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            app = Mock()
+            app.preferences_path = Path(temporary_dir) / "settings.json"
+            app.output_dir.get.return_value = "/exports"
+            app.voice_choice.get.return_value = ""
+            app.selected_tts_backend.return_value = "piper"
+            app.selected_voice.return_value = "en_US-ljspeech-medium"
+            app.azure_speech_region.get.return_value = "japaneast"
+            app.hide_api_keys_on_startup.get.return_value = True
+            StandaloneApp._save_preferences(app)
+            self.assertEqual(load_preferences(app.preferences_path)["hide_api_keys_on_startup"], "true")
+            app.output_dir.get.return_value = "/new-exports"
+            StandaloneApp._save_preferences(app)
+            self.assertEqual(load_preferences(app.preferences_path)["hide_api_keys_on_startup"], "true")
+            app.hide_api_keys_on_startup.get.return_value = False
+            StandaloneApp._save_preferences(app)
+            self.assertEqual(load_preferences(app.preferences_path)["hide_api_keys_on_startup"], "false")
+
+    def test_startup_preference_failure_notifies_and_restores_checkbox(self) -> None:
+        app = Mock()
+        app.hide_api_keys_on_startup.get.return_value = True
+        app._save_preferences.side_effect = OSError("read-only settings")
+        with patch("standalone_app.messagebox.showerror") as notification:
+            StandaloneApp._save_api_startup_preference(app)
+        app.hide_api_keys_on_startup.set.assert_called_once_with(False)
+        notification.assert_called_once()
+
     def setUp(self) -> None:
         self.backend = MemoryBackend()
         self.store = CredentialStore(self.backend)
@@ -86,6 +155,76 @@ class CredentialStoreTests(unittest.TestCase):
             with self.assertRaises(CredentialError):
                 self.store.worker_credentials("gemini")
 
+    def test_piper_never_reads_speech_key_and_azure_requires_key_and_region(self) -> None:
+        with patch.object(self.store, "effective_key", side_effect=AssertionError("no key needed")):
+            self.assertEqual(self.store.speech_credentials("piper"), {})
+        with patch.dict(os.environ, {"AZURE_SPEECH_KEY": "", "AZURE_SPEECH_REGION": ""}):
+            with self.assertRaises(CredentialError):
+                self.store.speech_credentials("azure", "japaneast")
+            self.store.save_key("azure", "speech-secret")
+            for region in ("", "https://example.org", "japaneast/other", "../invalid"):
+                with self.subTest(region=region), self.assertRaises(CredentialError):
+                    self.store.speech_credentials("azure", region)
+            self.assertEqual(self.store.speech_credentials("azure", "JapanEast"), {
+                "AZURE_SPEECH_KEY": "speech-secret", "AZURE_SPEECH_REGION": "japaneast",
+            })
+        with patch.dict(os.environ, {"AZURE_SPEECH_KEY": "env-speech", "AZURE_SPEECH_REGION": "westus"}):
+            self.assertEqual(self.store.speech_credentials("azure", "japaneast"), {
+                "AZURE_SPEECH_KEY": "env-speech", "AZURE_SPEECH_REGION": "westus",
+            })
+        for backend in ("edge-tts", "xtts-v2"):
+            with self.assertRaises(ValueError):
+                self.store.speech_credentials(backend)
+
+    def test_backend_switch_updates_voice_choices_and_preferences(self) -> None:
+        app = Mock()
+        app.selected_tts_backend.return_value = "piper"
+        StandaloneApp._change_tts_backend(app)
+        app.voice_selector.configure.assert_called_with(values=list(PIPER_VOICE_OPTIONS))
+        app.voice_choice.set.assert_called_with(next(iter(PIPER_VOICE_OPTIONS)))
+        app.selected_tts_backend.return_value = "azure"
+        StandaloneApp._change_tts_backend(app)
+        app.voice_selector.configure.assert_called_with(values=list(VOICE_OPTIONS))
+        app.tts_choice.get.return_value = next(iter(TTS_BACKENDS))
+        self.assertEqual(StandaloneApp.selected_tts_backend(app), "piper")
+        app.tts_choice.get.return_value = "invalid"
+        with self.assertRaises(ValueError):
+            StandaloneApp.selected_tts_backend(app)
+
+    def test_male_and_female_gui_choices_are_resolved_and_persisted(self) -> None:
+        for backend, options, voices in (
+            ("piper", PIPER_VOICE_OPTIONS, {"en_US-ljspeech-medium", "en_US-john-medium"}),
+            ("azure", VOICE_OPTIONS, {"en-US-AriaNeural", "en-US-AndrewNeural"}),
+        ):
+            self.assertTrue(voices <= set(options.values()))
+            for voice in voices:
+                label = next(label for label, name in options.items() if name == voice)
+                app = Mock()
+                app.selected_tts_backend.return_value = backend
+                app.voice_choice.get.return_value = label
+                app.selected_voice.side_effect = lambda: StandaloneApp.selected_voice(app)
+                app.output_dir.get.return_value = "/exports"
+                app.azure_speech_region.get.return_value = "japaneast"
+                app.hide_api_keys_on_startup.get.return_value = True
+                with self.subTest(backend=backend, voice=voice), tempfile.TemporaryDirectory() as directory:
+                    app.preferences_path = Path(directory) / "settings.json"
+                    self.assertEqual(StandaloneApp.selected_voice(app), voice)
+                    StandaloneApp._save_preferences(app)
+                    saved = load_preferences(app.preferences_path)
+                    self.assertEqual(saved["tts_backend"], backend)
+                    self.assertEqual(saved["voice"], voice)
+                    self.assertIn("女性" if voice in ("en_US-ljspeech-medium", "en-US-AriaNeural") else "男性", label)
+
+    def test_speech_region_is_nonsecret_setting_and_save_failure_restores_value(self) -> None:
+        app = Mock()
+        app.azure_speech_region.get.return_value = "westus"
+        StandaloneApp.save_azure_speech_region(app, " JapanEast ")
+        app.azure_speech_region.set.assert_called_with("japaneast")
+        app._save_preferences.side_effect = OSError("read only")
+        with self.assertRaises(OSError):
+            StandaloneApp.save_azure_speech_region(app, "eastus")
+        app.azure_speech_region.set.assert_called_with("westus")
+
     def test_credentials_passed_to_child_not_job_json_or_log(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
@@ -116,6 +255,43 @@ class CredentialStoreTests(unittest.TestCase):
                 if path.is_file():
                     self.assertNotIn(b"child-secret-do-not-persist", path.read_bytes(), str(path))
 
+    def test_speech_credentials_are_isolated_per_job_and_never_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            source = root / "lecture.mp4"
+            source.write_bytes(b"input")
+            self.store.save_key("azure", "speech-secret-do-not-persist")
+            digest = hashlib.sha256(b"speech-secret-do-not-persist").hexdigest()
+
+            def command(job: dict, job_dir: Path) -> list[str]:
+                assertion = (
+                    f"assert hashlib.sha256(os.environ['AZURE_SPEECH_KEY'].encode()).hexdigest() == '{digest}'; "
+                    "assert os.environ['AZURE_SPEECH_REGION']=='japaneast'; "
+                    if job["options"]["tts_backend"] == "azure" else
+                    "assert 'AZURE_SPEECH_KEY' not in os.environ; assert 'AZURE_SPEECH_REGION' not in os.environ; "
+                )
+                return [sys.executable, "-c",
+                        "import os,hashlib,pathlib,sys; " + assertion +
+                        "pathlib.Path(sys.argv[1]).write_bytes(b'output')",
+                        str(job_dir / "final.mp4")]
+
+            manager = LocalJobManager(
+                root / "data", command_builder=command,
+                credential_provider=self.store.worker_credentials,
+                speech_credential_provider=self.store.speech_credentials,
+            )
+            with patch.dict(os.environ, {"AZURE_SPEECH_KEY": "", "AZURE_SPEECH_REGION": ""}):
+                for backend in ("azure", "piper"):
+                    job_id = manager.register_job(source, options={
+                        "translation_backend": "argos", "tts_backend": backend,
+                        "azure_speech_region": "japaneast",
+                    })
+                    manager._run_job(manager.queue_dir / f"{job_id}.json")
+                    self.assertEqual(manager.get_job(job_id)["status"], "done")
+            for path in manager.data_dir.rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(b"speech-secret-do-not-persist", path.read_bytes())
+
     def test_saved_key_removal_before_execution_marks_job_error(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
@@ -138,8 +314,73 @@ class CredentialStoreTests(unittest.TestCase):
         app.configure_api_keys.assert_called_once()
         notification.assert_called_once()
 
+    def test_gui_azure_confirmation_controls_job_registration(self) -> None:
+        app = Mock()
+        app.translation_backend.get.return_value = "gemini"
+        app.english_srt_path.get.return_value = ""
+        app.japanese_srt_path.get.return_value = ""
+        app.selected_tts_backend.return_value = "azure"
+        app.selected_voice.return_value = "en-US-AriaNeural"
+        app.azure_speech_region.get.return_value = "japaneast"
+        app.video_path.get.return_value = "/input.mp4"
+        app.output_dir.get.return_value = "/exports"
+        app.transcription_preset.get.return_value = "balanced"
+        app.glossary_terms.return_value = []
+        with patch("standalone_app.messagebox.askyesno", return_value=False):
+            StandaloneApp.add_job(app)
+        app.manager.register_job.assert_not_called()
+        with patch("standalone_app.messagebox.askyesno", return_value=True):
+            StandaloneApp.add_job(app)
+        app.credentials.speech_credentials.assert_called_with("azure", "japaneast")
+        options = app.manager.register_job.call_args.args[2]
+        self.assertEqual(options["tts_backend"], "azure")
+        self.assertEqual(options["azure_speech_region"], "japaneast")
+        self.assertNotIn("AZURE_SPEECH_KEY", options)
+
+    def test_gui_piper_does_not_show_speech_charge_confirmation(self) -> None:
+        app = Mock()
+        app.translation_backend.get.return_value = "argos"
+        app.english_srt_path.get.return_value = ""
+        app.japanese_srt_path.get.return_value = ""
+        app.selected_tts_backend.return_value = "piper"
+        app.selected_voice.return_value = "en_US-ljspeech-medium"
+        app.azure_speech_region.get.return_value = ""
+        app.video_path.get.return_value = "/input.mp4"
+        app.output_dir.get.return_value = "/exports"
+        app.transcription_preset.get.return_value = "balanced"
+        app.glossary_terms.return_value = []
+        with patch("standalone_app.messagebox.askyesno") as confirmation:
+            StandaloneApp.add_job(app)
+        confirmation.assert_not_called()
+        self.assertEqual(app.manager.register_job.call_args.args[2]["tts_backend"], "piper")
+
 
 class BundleRuntimeTests(unittest.TestCase):
+    def test_runtime_forwards_selected_piper_voice_to_model_resolver(self) -> None:
+        for voice in ("en_US-ljspeech-medium", "en_US-john-medium"):
+            model_paths = (Path(f"{voice}.onnx"), Path(f"{voice}.onnx.json"))
+            resolver = Mock(return_value=model_paths)
+            with self.subTest(voice=voice), patch.dict(
+                sys.modules, {"piper_model": SimpleNamespace(resolve_model_paths=resolver)},
+            ), patch.object(app_runtime, "is_bundled", return_value=True), patch.object(
+                app_runtime, "resource_root", return_value=Path("/bundled"),
+            ):
+                self.assertEqual(app_runtime.piper_model_paths(voice), model_paths)
+                resolver.assert_called_once_with(Path("/bundled"), voice=voice)
+
+    def test_distribution_license_gate_rejects_nonfree_and_unverified_binaries(self) -> None:
+        version = "ffmpeg version test\nconfiguration: --enable-gpl --enable-version3\n"
+        license_text = "GNU General Public License; either version 3 of the License, or any later version."
+        self.assertEqual(validate_ffmpeg_license(version, license_text), "GPL-3.0-or-later")
+        for config, text in (
+            (version + "--enable-nonfree", license_text),
+            (version, "This version has nonfree parts. Therefore it is not legally redistributable."),
+            ("ffmpeg version test", license_text),
+            (version, "GNU Lesser General Public License"),
+        ):
+            with self.assertRaises(RuntimeError):
+                validate_ffmpeg_license(config, text)
+
     def test_bundle_explicitly_rejects_ocr_options(self) -> None:
         for option in ("--video-text-overlay", "--video-text-overlay-fps=2"):
             output = io.StringIO()
@@ -187,24 +428,6 @@ class BundleRuntimeTests(unittest.TestCase):
                 app_runtime, "resource_root", return_value=root
             ):
                 self.assertFalse(app_runtime.is_bundled())
-
-    def test_frozen_tts_does_not_use_system_edge_tts_or_python_module_flags(self) -> None:
-        with patch.object(sys, "frozen", True, create=True), patch("shutil.which") as lookup:
-            self.assertEqual(get_edge_tts_command(), [sys.executable, "--edge-tts"])
-            lookup.assert_not_called()
-        with patch.object(sys, "frozen", False, create=True), patch("shutil.which", return_value="/bin/edge-tts"):
-            self.assertEqual(get_edge_tts_command(), ["/bin/edge-tts"])
-
-    def test_worker_dispatches_bundled_edge_tts_with_original_cli_arguments(self) -> None:
-        arguments = ["TranslateWorker", "--edge-tts", "--voice", "en-US-AriaNeural", "--help"]
-        with patch.object(sys, "argv", arguments), patch.object(
-            bundled_worker, "configure_runtime"
-        ), patch.object(bundled_worker.multiprocessing, "freeze_support"), patch.object(
-            bundled_worker.runpy, "run_module"
-        ) as dispatch:
-            self.assertEqual(bundled_worker.main(), 0)
-            dispatch.assert_called_once_with("edge_tts", run_name="__main__")
-            self.assertEqual(sys.argv, ["TranslateWorker", "--voice", "en-US-AriaNeural", "--help"])
 
     def test_source_command_retains_existing_python_override(self) -> None:
         with patch.object(app_runtime, "is_bundled", return_value=False), patch.dict(
@@ -264,12 +487,33 @@ class BundleRuntimeTests(unittest.TestCase):
             ), patch.object(app_runtime, "app_version", return_value="0.1.0"), patch(
                 "credential_store.secure_backend", return_value=MemoryBackend()
             ), patch.object(app_runtime.subprocess, "run", return_value=subprocess.CompletedProcess(
-                [], 0, stdout="ffmpeg test version\n"
+                [], 0, stdout="ffmpeg test version\nconfiguration: --enable-gpl --enable-version3\n"
+                "GNU General Public License; either version 3 of the License.\n", stderr=""
             )), patch.object(sys, "stdout", None):
                 self.assertEqual(app_runtime.bundle_self_test("gui", report), 0)
             payload = json.loads(report.read_text())
             self.assertEqual(payload["status"], "ok")
             self.assertEqual(payload["version"], "0.1.0")
+
+    def test_bundle_self_test_reports_nonfree_tool_as_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            prompts = root / "lecture_poc" / "prompts"
+            prompts.mkdir(parents=True)
+            for name in ("engineering_terms.csv", "whisper_initial_prompt.txt", "jp_clean_ollama.txt"):
+                (prompts / name).touch()
+            report = root / "report.json"
+            with patch.object(app_runtime, "configure_runtime"), patch.object(
+                app_runtime, "is_bundled", return_value=True
+            ), patch.object(app_runtime, "resource_root", return_value=root), patch.object(
+                app_runtime, "worker_command", return_value=["worker"]
+            ), patch("credential_store.secure_backend", return_value=MemoryBackend()), patch.object(
+                app_runtime.subprocess, "run", return_value=subprocess.CompletedProcess(
+                    [], 0, stdout="ffmpeg version test\nconfiguration: --enable-nonfree\n", stderr=""
+                )
+            ):
+                self.assertEqual(app_runtime.bundle_self_test("gui", report), 1)
+            self.assertIn("nonfree", json.loads(report.read_text())["error"])
 
     def test_source_version_is_read_from_packaging_version(self) -> None:
         self.assertTrue(app_runtime.app_version())
@@ -290,16 +534,15 @@ class BundleRuntimeTests(unittest.TestCase):
                 app_runtime, "is_bundled", return_value=True
             ), patch.object(app_runtime, "resource_root", return_value=root), patch.object(
                 app_runtime.importlib, "import_module", return_value=vad
-            ), patch.object(app_runtime.subprocess, "run", side_effect=subprocess.CalledProcessError(
-                1, [sys.executable, "--edge-tts", "--help"]
-            )) as command:
+            ), patch.object(app_runtime, "_piper_smoke_test", side_effect=RuntimeError(
+                "Piper offline synthesis failed"
+            )) as synthesis, patch.object(app_runtime.subprocess, "run") as command:
                 self.assertEqual(app_runtime.bundle_self_test("worker", report), 1)
-                command.assert_called_once_with(
-                    [sys.executable, "--edge-tts", "--help"],
-                    capture_output=True, text=True, check=True, timeout=60,
-                )
+                synthesis.assert_called_once_with()
+                command.assert_not_called()
                 vad.get_vad_model.assert_called_once_with()
             self.assertEqual(json.loads(report.read_text())["status"], "error")
+            self.assertIn("Piper", json.loads(report.read_text())["error"])
 
     def test_worker_self_test_rejects_missing_vad_assets(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:

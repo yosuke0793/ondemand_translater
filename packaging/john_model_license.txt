@@ -1,0 +1,25 @@
+Piper John voice license and provenance evidence
+===============================================
+
+Bundled identifier: en_US-john-medium
+Creator: Bryce Beattie
+Creator page: https://brycebeattie.com/files/tts/
+
+The creator page's John row describes a US English male single-speaker voice,
+finetuned from Kristin on medium quality settings for an additional 600 epochs.
+It states that the dataset contains about 12.5 hours of recordings, all from
+LibriVox.org, and labels this voice "License: public domain".
+
+The John row links these exact original model and configuration downloads:
+https://sfo3.digitaloceanspaces.com/bkmdls/john.onnx
+https://sfo3.digitaloceanspaces.com/bkmdls/john.onnx.json
+
+The original downloads are renamed locally to en_US-john-medium.onnx and
+en_US-john-medium.onnx.json without modifying their bytes. These HTTPS URLs
+are mutable; piper_model.json pins the SHA-256 of each observed original.
+Downloads and caches must match those hashes; no unpinned replacement is used.
+The original configuration declares one speaker, a 22050 Hz sample rate,
+espeak phonemes, and piper_version 1.0.0. Runtime compatibility is verified
+with the pinned piper-tts 1.3.0 engine rather than inferred from that field.
+
+Creator licensing evidence and original assets consulted 2026-10-10.

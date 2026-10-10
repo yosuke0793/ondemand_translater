@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
 import subprocess
-import sys
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,6 +24,7 @@ from .srt_utils import (
     translate_srt_text_lines,
 )
 from .video_text_overlay import detect_video_text_regions, overlay_translated_regions
+from .tts import TTSError, create_backend, validate_tts_settings, volume_gain
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,7 @@ class PipelineConfig:
     model_size: str | None = None
     whisper_prompt_file: Path | None = None
     transcription_preset: str = "balanced"
-    voice: str = "en-US-AriaNeural"
+    voice: str | None = None
     tts_volume: str = "+100%"
     chunk_seconds: float = 600.0
     chunk_overlap_seconds: float = 1.5
@@ -44,7 +45,7 @@ class PipelineConfig:
     transcription_compute_type: str | None = None
     tts_workers: int = 1
     tts_timing_mode: str = "no-overlap"
-    tts_backend: str = "edge-tts"
+    tts_backend: str = "piper"
     subs_sync_mode: str = "tts-aligned"
     lowpass_cutoff_hz: float = 6500.0
     jp_clean_mode: str = "rule"
@@ -148,11 +149,6 @@ GEMINI_ONE_SHOT_MAX_TEXTS = read_positive_int_env(
     GEMINI_ONE_SHOT_MAX_TEXTS_DEFAULT,
 )
 
-XTTS_MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
-XTTS_REFERENCE_SAMPLE_SECONDS = 12.0
-XTTS_REFERENCE_MIN_SECONDS = 6.0
-
-
 def read_bool_env(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -212,6 +208,10 @@ def run_pipeline_stage(stage_name: str, func, *args) -> None:
 def run_pipeline(config: PipelineConfig) -> None:
     global PIPELINE_LOG_PATH
 
+    try:
+        validate_tts_settings(config.tts_backend, config.voice, config.tts_volume)
+    except TTSError as exc:
+        raise PipelineStepError("generate_en_mp3", str(exc)) from None
     if not config.input_video.exists():
         raise FileNotFoundError(f"Input video not found: {config.input_video}")
 
@@ -433,6 +433,7 @@ def build_en_mp3_metadata(
     jp_srt_text = jp_reference_srt.read_text(encoding="utf-8")
     input_stat = input_video.stat()
     return {
+        "tts_pipeline_version": "2",
         "tts_backend": tts_backend,
         "voice": voice,
         "tts_volume": tts_volume,
@@ -491,13 +492,17 @@ def generate_tts_mp3_from_segments(
     subs_sync_mode: str,
     aligned_srt_output: Path | None,
     synthesize_text_segment,
+    tts_volume: str = "+0%",
 ) -> None:
+    gain = volume_gain(tts_volume)
     raw_entries = extract_srt_entries(en_srt.read_text(encoding="utf-8"))
     entries = [entry for entry in raw_entries if entry.text.strip()]
     video_duration = get_media_duration_seconds(input_video)
 
     if not entries:
         generate_silence_mp3(en_mp3, video_duration)
+        if tts_timing_mode == "no-overlap" and subs_sync_mode == "tts-aligned" and aligned_srt_output is not None:
+            aligned_srt_output.write_text(en_srt.read_text(encoding="utf-8"), encoding="utf-8")
         return
 
     if len(entries) != len(raw_entries):
@@ -517,7 +522,7 @@ def generate_tts_mp3_from_segments(
         for entry in entries:
             text_key = entry.text.strip()
             if text_key not in segment_path_by_text:
-                segment_path = segment_dir / f"segment_unique_{len(unique_texts) + 1:05d}.mp3"
+                segment_path = segment_dir / f"segment_unique_{len(unique_texts) + 1:05d}.wav"
                 text_file = segment_dir / f"segment_unique_{len(unique_texts) + 1:05d}.txt"
                 segment_path_by_text[text_key] = segment_path
                 text_file.write_text(text_key + "\n", encoding="utf-8")
@@ -627,7 +632,8 @@ def generate_tts_mp3_from_segments(
 
         mix_inputs = "[0:a]" + "".join(delayed_labels)
         filter_parts.append(
-            f"{mix_inputs}amix=inputs={len(segment_files) + 1}:duration=longest:dropout_transition=0:normalize=0[mix]"
+            f"{mix_inputs}amix=inputs={len(segment_files) + 1}:duration=longest:dropout_transition=0:normalize=0,"
+            f"volume={gain:.6f}[mix]"
         )
         command.extend(
             [
@@ -648,93 +654,11 @@ def generate_tts_mp3_from_segments(
         shutil.rmtree(segment_dir, ignore_errors=True)
 
 
-def extract_xtts_reference_audio(input_video: Path, jp_reference_srt: Path, reference_audio_path: Path) -> None:
-    jp_entries = [entry for entry in extract_srt_entries(jp_reference_srt.read_text(encoding="utf-8")) if entry.text.strip()]
-    if jp_entries:
-        first_entry = jp_entries[0]
-        clip_start = max(0.0, first_entry.start_seconds - 1.0)
-        clip_duration = min(
-            XTTS_REFERENCE_SAMPLE_SECONDS,
-            max(
-                XTTS_REFERENCE_MIN_SECONDS,
-                (first_entry.end_seconds - first_entry.start_seconds) + 4.0,
-            ),
-        )
-    else:
-        clip_start = 0.0
-        clip_duration = XTTS_REFERENCE_SAMPLE_SECONDS
-
-    run_command(
-        [
-            "ffmpeg",
-            "-y",
-            "-ss",
-            f"{clip_start:.3f}",
-            "-t",
-            f"{clip_duration:.3f}",
-            "-i",
-            str(input_video),
-            "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "22050",
-            "-c:a",
-            "pcm_s16le",
-            str(reference_audio_path),
-        ],
-        "extract_xtts_reference_audio",
-    )
-
-
-def ensure_edge_tts() -> None:
-    command = get_edge_tts_command()
-    try:
-        subprocess.run([*command, "--help"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
-        raise FileNotFoundError(
-            "edge-tts が見つからないか実行できません。次を実行してください: python -m pip install edge-tts"
-        ) from exc
-
-
-def get_edge_tts_command() -> list[str]:
-    if getattr(sys, "frozen", False):
-        return [sys.executable, "--edge-tts"]
-    edge_tts_bin = shutil.which("edge-tts")
-    if edge_tts_bin:
-        return [edge_tts_bin]
-    return [sys.executable, "-m", "edge_tts"]
-
-
 def run_command(command: list[str], step_name: str) -> None:
     try:
         subprocess.run(command, check=True)
     except subprocess.CalledProcessError as exc:
         raise PipelineStepError(step_name, f"{step_name} failed") from exc
-
-
-def run_command_with_retries(
-    command: list[str],
-    step_name: str,
-    max_attempts: int = 4,
-    initial_delay_seconds: float = 1.5,
-) -> None:
-    last_error: subprocess.CalledProcessError | None = None
-    for attempt in range(1, max_attempts + 1):
-        try:
-            subprocess.run(command, check=True)
-            return
-        except subprocess.CalledProcessError as exc:
-            last_error = exc
-            if attempt >= max_attempts:
-                break
-            wait_seconds = initial_delay_seconds * (2 ** (attempt - 1))
-            log_pipeline(
-                f"WARN  {step_name} retry {attempt}/{max_attempts - 1} after command failure; waiting {wait_seconds:.1f}s"
-            )
-            sleep(wait_seconds)
-
-    raise PipelineStepError(step_name, f"{step_name} failed after {max_attempts} attempts") from last_error
 
 
 def run_command_with_output(command: list[str], step_name: str) -> str:
@@ -1066,7 +990,7 @@ def resolve_tts_workers(tts_workers: int) -> int:
         return tts_workers
 
     cpu_count = os.cpu_count() or 1
-    # edge-tts は過度な並列で 503 が増えやすいため、自動設定は控えめにする。
+    # Keep automatic parallelism conservative for memory use and cloud quotas.
     if cpu_count >= 16:
         return 3
     if cpu_count >= 8:
@@ -1101,8 +1025,14 @@ def build_tts_start_times(
             adjusted_count += 1
             max_shift_seconds = max(max_shift_seconds, shift_seconds)
 
-        start_times_ms.append(max(0, int(round(scheduled_start * 1000.0))))
-        previous_end_seconds = max(previous_end_seconds, scheduled_start + segment_duration)
+        start_ms = max(
+            0,
+            math.ceil(scheduled_start * 1000.0)
+            if tts_timing_mode == "no-overlap"
+            else int(round(scheduled_start * 1000.0)),
+        )
+        start_times_ms.append(start_ms)
+        previous_end_seconds = max(previous_end_seconds, start_ms / 1000.0 + segment_duration)
 
     return start_times_ms, adjusted_count, max_shift_seconds
 
@@ -1113,7 +1043,7 @@ def build_aligned_srt_text(
     start_times_ms: list[int],
     segment_duration_by_text: dict[str, float],
     min_duration_seconds: float = 0.20,
-    min_gap_seconds: float = 0.01,
+    min_gap_seconds: float = 0.0,
 ) -> tuple[str, float, float]:
     if len(entries) != len(start_times_ms):
         raise PipelineStepError(
@@ -1123,7 +1053,6 @@ def build_aligned_srt_text(
 
     rendered_blocks: list[str] = []
     entry_index = 0
-    previous_end = 0.0
     first_shift_seconds = 0.0
     last_shift_seconds = 0.0
 
@@ -1141,16 +1070,18 @@ def build_aligned_srt_text(
             )
 
         entry = entries[entry_index]
-        start_seconds = max(previous_end, max(0.0, start_times_ms[entry_index] / 1000.0))
+        start_seconds = max(0.0, start_times_ms[entry_index] / 1000.0)
         segment_duration = max(min_duration_seconds, segment_duration_by_text.get(entry.text.strip(), 0.0))
         end_seconds = max(start_seconds + min_duration_seconds, start_seconds + segment_duration)
+        if entry_index + 1 < len(start_times_ms):
+            next_start = start_times_ms[entry_index + 1] / 1000.0
+            end_seconds = max(start_seconds, min(end_seconds, next_start - min_gap_seconds))
 
         shift_seconds = max(0.0, start_seconds - entry.start_seconds)
         if entry_index == 0:
             first_shift_seconds = shift_seconds
         last_shift_seconds = shift_seconds
 
-        previous_end = end_seconds + min_gap_seconds
         aligned_timecode = f"{format_timestamp(start_seconds)} --> {format_timestamp(end_seconds)}"
         rendered_blocks.append(render_srt_block(SRTBlock(block.index, aligned_timecode, block.text_lines)))
         entry_index += 1
@@ -2136,110 +2067,12 @@ def generate_silence_mp3(output_path: Path, duration_seconds: float) -> None:
     )
 
 
-def generate_en_mp3_with_edge_tts(
-    en_srt: Path,
-    input_video: Path,
-    en_mp3: Path,
-    voice: str,
-    tts_volume: str,
-    tts_workers: int,
-    tts_timing_mode: str,
-    subs_sync_mode: str,
-    aligned_srt_output: Path | None,
-) -> None:
-    ensure_edge_tts()
-    edge_tts_command = get_edge_tts_command()
-
-    def synthesize_text_segment(text_value: str, target_path: Path, text_file: Path) -> None:
-        run_command_with_retries(
-            [
-                *edge_tts_command,
-                "--voice",
-                voice,
-                "--volume",
-                tts_volume,
-                "--file",
-                str(text_file),
-                "--write-media",
-                str(target_path),
-            ],
-            "generate_en_mp3",
-            max_attempts=8,
-            initial_delay_seconds=3.0,
-        )
-
-    generate_tts_mp3_from_segments(
-        en_srt,
-        input_video,
-        en_mp3,
-        tts_workers,
-        tts_timing_mode,
-        subs_sync_mode,
-        aligned_srt_output,
-        synthesize_text_segment,
-    )
-
-
-def generate_en_mp3_with_xtts_v2(
-    en_srt: Path,
-    jp_reference_srt: Path,
-    input_video: Path,
-    en_mp3: Path,
-    tts_workers: int,
-    tts_timing_mode: str,
-    subs_sync_mode: str,
-    aligned_srt_output: Path | None,
-) -> None:
-    try:
-        from TTS.api import TTS
-    except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError(
-            "XTTS v2 を使うには追加依存が必要です。python -m pip install -r requirements-xtts.txt を実行してください。"
-        ) from exc
-
-    reference_audio_path = en_mp3.parent / "xtts_reference.wav"
-    extract_xtts_reference_audio(input_video, jp_reference_srt, reference_audio_path)
-
-    try:
-        try:
-            import torch
-
-            use_gpu = bool(torch.cuda.is_available())
-        except Exception:
-            use_gpu = False
-
-        tts = TTS(model_name=XTTS_MODEL_NAME, progress_bar=False, gpu=use_gpu)
-
-        def synthesize_text_segment(text_value: str, target_path: Path, text_file: Path) -> None:
-            del text_file
-            tts.tts_to_file(
-                text=text_value,
-                speaker_wav=str(reference_audio_path),
-                language="en",
-                file_path=str(target_path),
-            )
-
-        generate_tts_mp3_from_segments(
-            en_srt,
-            input_video,
-            en_mp3,
-            1,
-            tts_timing_mode,
-            subs_sync_mode,
-            aligned_srt_output,
-            synthesize_text_segment,
-        )
-    finally:
-        if reference_audio_path.exists():
-            reference_audio_path.unlink()
-
-
 def generate_en_mp3(
     en_srt: Path,
     jp_reference_srt: Path,
     input_video: Path,
     en_mp3: Path,
-    voice: str,
+    voice: str | None,
     tts_volume: str,
     force: bool,
     tts_workers: int,
@@ -2248,6 +2081,14 @@ def generate_en_mp3(
     subs_sync_mode: str,
     aligned_srt_output: Path | None,
 ) -> None:
+    try:
+        voice = validate_tts_settings(tts_backend, voice, tts_volume)
+    except TTSError as exc:
+        raise PipelineStepError("generate_en_mp3", str(exc)) from None
+    if tts_timing_mode not in {"strict", "no-overlap"}:
+        raise PipelineStepError("generate_en_mp3", "Unknown TTS timing mode.")
+    if subs_sync_mode not in {"original", "tts-aligned"}:
+        raise PipelineStepError("generate_en_mp3", "Unknown subtitle sync mode.")
     metadata_path = en_mp3.parent / f"{en_mp3.name}.meta.json"
     expected_metadata = build_en_mp3_metadata(
         en_srt,
@@ -2264,45 +2105,25 @@ def generate_en_mp3(
 
     print(f"[音声合成] {en_mp3}")
     try:
-        if tts_backend == "xtts-v2":
-            generate_en_mp3_with_xtts_v2(
-                en_srt,
-                jp_reference_srt,
-                input_video,
-                en_mp3,
-                tts_workers,
-                tts_timing_mode,
-                subs_sync_mode,
-                aligned_srt_output,
-            )
-        else:
-            generate_en_mp3_with_edge_tts(
-                en_srt,
-                input_video,
-                en_mp3,
-                voice,
-                tts_volume,
-                tts_workers,
-                tts_timing_mode,
-                subs_sync_mode,
-                aligned_srt_output,
-            )
-    except Exception as exc:
-        if tts_backend != "xtts-v2":
-            raise
-        log_pipeline(f"WARN  xtts_v2 failed; falling back to edge-tts: {exc}")
-        print(f"[音声合成] XTTS v2 に失敗したため edge-tts にフォールバックします: {exc}")
-        generate_en_mp3_with_edge_tts(
+        backend = create_backend(tts_backend, voice)
+
+        def synthesize_text_segment(text_value: str, target_path: Path, text_file: Path) -> None:
+            del text_file
+            backend.synthesize(text_value, target_path)
+
+        generate_tts_mp3_from_segments(
             en_srt,
             input_video,
             en_mp3,
-            voice,
-            tts_volume,
             tts_workers,
             tts_timing_mode,
             subs_sync_mode,
             aligned_srt_output,
+            synthesize_text_segment,
+            tts_volume,
         )
+    except TTSError as exc:
+        raise PipelineStepError("generate_en_mp3", str(exc)) from None
 
     write_en_mp3_metadata(metadata_path, expected_metadata)
 

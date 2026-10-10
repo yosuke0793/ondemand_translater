@@ -4,7 +4,7 @@ import re
 
 
 _SENSITIVE_KEY_PATTERN = re.compile(
-    r"(?i)(api[_-]?key|token|secret|password|authorization|bearer|deepl[_-]?api[_-]?key|gemini[_-]?api[_-]?key)"
+    r"(?i)(api[_-]?key|token|secret|password|authorization|bearer|azure_speech_key|ocp-apim-subscription-key)"
 )
 
 
@@ -32,6 +32,10 @@ def redact_secrets(value: object) -> str:
     # Authorization header-like values.
     redacted = re.sub(r"(?i)(Bearer\s+)([A-Za-z0-9._\-]+)", r"\1[REDACTED]", redacted)
     redacted = re.sub(r"(?i)(DeepL-Auth-Key\s+)(\S+)", r"\1[REDACTED]", redacted)
+    redacted = re.sub(
+        r"(?i)\b(AZURE_SPEECH_KEY|Ocp-Apim-Subscription-Key)\b\s*([=:])\s*([^\s,;\]\)\}]+)",
+        r"\1\2[REDACTED]", redacted,
+    )
 
     # KEY=VALUE / KEY: VALUE forms.
     redacted = re.sub(
@@ -48,7 +52,7 @@ def redact_secrets(value: object) -> str:
     if _SENSITIVE_KEY_PATTERN.search(redacted):
         # Final pass for quoted key-value payloads: "apiKey": "..."
         redacted = re.sub(
-            r"(?i)(\"(?:api[_-]?key|token|secret|password|authorization)\"\s*:\s*\")(.*?)(\")",
+            r"(?i)(\"(?:api[_-]?key|token|secret|password|authorization|azure_speech_key|ocp-apim-subscription-key)\"\s*:\s*\")(.*?)(\")",
             r"\1[REDACTED]\3",
             redacted,
         )

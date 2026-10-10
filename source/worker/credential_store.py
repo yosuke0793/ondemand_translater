@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from typing import Protocol
 
 
 SERVICE_NAME = "TranslateService"
-API_VARIABLES = {"gemini": "GEMINI_API_KEY", "deepl": "DEEPL_API_KEY"}
+API_VARIABLES = {
+    "gemini": "GEMINI_API_KEY", "deepl": "DEEPL_API_KEY", "azure": "AZURE_SPEECH_KEY",
+}
+
+
+def validate_speech_region(value: str) -> str:
+    region = value.strip().lower()
+    if not re.fullmatch(r"[a-z][a-z0-9]{1,49}", region):
+        raise ValueError("Azure Speechのリージョン識別子を入力してください（例: japaneast）。URLは入力しません。")
+    return region
 
 
 class CredentialError(RuntimeError):
@@ -100,7 +110,23 @@ class CredentialStore:
     def worker_credentials(self, provider: str, needs_translation: bool = True) -> dict[str, str]:
         if provider == "argos" or not needs_translation:
             return {}
+        if provider not in ("gemini", "deepl"):
+            raise ValueError("対応していない翻訳サービスです。")
         key = self.effective_key(provider)
         if not key:
             raise CredentialError("翻訳用APIキーが未設定です。「APIキー設定」で登録してから再度ジョブを追加してください。")
         return {self._variable(provider): key}
+
+    def speech_credentials(self, backend: str, region: str = "") -> dict[str, str]:
+        if backend == "piper":
+            return {}
+        if backend != "azure":
+            raise ValueError("音声合成はpiperまたはazureを選択してください。旧Edge TTS／XTTSは利用できません。")
+        key = self.effective_key("azure")
+        if not key:
+            raise CredentialError("Azure SpeechのAPIキーが未設定です。「APIキー設定」で登録してください。")
+        try:
+            effective_region = validate_speech_region(os.environ.get("AZURE_SPEECH_REGION") or region)
+        except ValueError as exc:
+            raise CredentialError(str(exc)) from exc
+        return {"AZURE_SPEECH_KEY": key, "AZURE_SPEECH_REGION": effective_region}

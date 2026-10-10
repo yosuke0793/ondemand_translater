@@ -58,12 +58,14 @@ class LocalJobManager:
         command_builder: Callable[[dict, Path], list[str]] | None = None,
         poll_interval: float = 1.0,
         credential_provider: Callable[[str, bool], dict[str, str]] | None = None,
+        speech_credential_provider: Callable[[str, str], dict[str, str]] | None = None,
     ) -> None:
         self.data_dir = Path(data_dir).expanduser().resolve()
         self.worker_root = (worker_root or Path(__file__).resolve().parent).resolve()
         self.command_builder = command_builder or self._default_command
         self.poll_interval = max(0.1, poll_interval)
         self.credential_provider = credential_provider
+        self.speech_credential_provider = speech_credential_provider
         self.queue_dir = self.data_dir / "queue"
         self.processing_dir = self.data_dir / "processing"
         self.done_dir = self.data_dir / "done"
@@ -76,6 +78,7 @@ class LocalJobManager:
         self._thread: threading.Thread | None = None
         self._process: subprocess.Popen[str] | None = None
         self._process_job_id: str | None = None
+        self._active_job_id: str | None = None
         self._lock = threading.RLock()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._initialize()
@@ -147,6 +150,9 @@ class LocalJobManager:
 
     def _default_command(self, job: dict, job_dir: Path) -> list[str]:
         options = job.get("options", {})
+        tts_backend = str(options.get("tts_backend", "piper"))
+        if tts_backend not in ("piper", "azure"):
+            raise ValueError("旧Edge TTS／XTTSのジョブは利用できません。PiperまたはAzureで再登録してください。")
         command = worker_command() + [
             "--input",
             str(job_dir / "input.mp4"),
@@ -156,8 +162,10 @@ class LocalJobManager:
             str(options.get("jp_clean_mode", "rule")),
             "--transcription-preset",
             str(options.get("transcription_preset", "balanced")),
+            "--tts-backend",
+            tts_backend,
             "--voice",
-            str(options.get("voice", "en-US-AriaNeural")),
+            str(options.get("voice", "en_US-ljspeech-medium" if tts_backend == "piper" else "en-US-AriaNeural")),
             "--tts-volume",
             str(options.get("tts_volume", "+100%")),
             "--tts-timing-mode",
@@ -198,6 +206,20 @@ class LocalJobManager:
         output_directory: Path | None = None,
         japanese_srt: Path | None = None,
         english_srt: Path | None = None,
+    ) -> str:
+        with self._lock:
+            return self._register_job(
+                input_video, glossary_text, options, output_directory, japanese_srt, english_srt
+            )
+
+    def _register_job(
+        self,
+        input_video: Path,
+        glossary_text: str,
+        options: dict | None,
+        output_directory: Path | None,
+        japanese_srt: Path | None,
+        english_srt: Path | None,
     ) -> str:
         source = Path(input_video).expanduser().resolve()
         if not source.is_file():
@@ -310,6 +332,104 @@ class LocalJobManager:
                 return job
         return None
 
+    def delete_jobs(self, job_ids: list[str]) -> None:
+        with self._lock:
+            all_jobs = self.get_jobs()
+            selected = {job["job_id"]: job for job in all_jobs if job["job_id"] in job_ids}
+            if set(job_ids) != set(selected):
+                raise ValueError("削除対象のジョブが見つかりません。一覧を更新してください。")
+            if any(job["status"] not in TERMINAL_STATES for job in selected.values()) or self._active_job_id in selected:
+                raise RuntimeError("処理中・待機中のジョブは削除できません。キャンセル後、停止を待ってください。")
+            protected: set[Path] = set()
+            for job in all_jobs:
+                output = Path(job["output_video"]).expanduser().resolve()
+                protected.update((output, output.with_suffix(".srt"), output.with_name(f"{output.stem}_ja.srt")))
+            for job_id in selected:
+                job_dir = self.jobs_dir / job_id
+                if job_dir.is_symlink() or job_dir.resolve().parent != self.jobs_dir.resolve():
+                    raise RuntimeError(f"ジョブ保存先が不正です: {job_dir}")
+                def walk_error(exc: OSError) -> None:
+                    raise exc
+                for directory, directories, files in os.walk(
+                    job_dir, topdown=False, followlinks=False, onerror=walk_error
+                ):
+                    for name in files:
+                        path = Path(directory) / name
+                        if path.resolve() not in protected:
+                            path.unlink()
+                    for name in directories:
+                        path = Path(directory) / name
+                        if path.is_symlink():
+                            if path.resolve() not in protected:
+                                path.unlink()
+                        elif not any(path.iterdir()):
+                            path.rmdir()
+                if job_dir.is_dir() and not any(job_dir.iterdir()):
+                    job_dir.rmdir()
+                (self.logs_dir / f"{job_id}.log").unlink(missing_ok=True)
+                for directory in (self.queue_dir, self.processing_dir, self.done_dir, self.error_dir):
+                    (directory / f"{job_id}.json").unlink(missing_ok=True)
+                with sqlite3.connect(self.db_path) as connection:
+                    connection.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
+                    connection.commit()
+
+    def delete_job_intermediates(self) -> int:
+        with self._lock:
+            jobs = self.get_jobs()
+            if self._active_job_id is not None or any(
+                job["status"] not in TERMINAL_STATES for job in jobs
+            ):
+                raise RuntimeError("処理中・待機中のジョブがあります。全ジョブの停止・完了後に実行してください。")
+            protected = set()
+            for job in jobs:
+                output = Path(job["output_video"]).expanduser().resolve()
+                protected.update((
+                    output,
+                    output.with_suffix(".srt"),
+                    output.with_name(f"{output.stem}_ja.srt"),
+                ))
+            removed = 0
+            def report_walk_error(exc: OSError) -> None:
+                raise RuntimeError(
+                    f"中間データを読み取れません（{removed}ファイル削除済み）: {exc}"
+                ) from exc
+
+            for job in jobs:
+                job_dir = self.jobs_dir / job["job_id"]
+                if job_dir.is_symlink() or not job_dir.is_dir():
+                    continue
+                if job_dir.resolve().parent != self.jobs_dir.resolve():
+                    raise RuntimeError(f"ジョブ保存先が不正です: {job_dir}")
+                for directory, directories, files in os.walk(
+                    job_dir, topdown=False, followlinks=False, onerror=report_walk_error
+                ):
+                    root = Path(directory)
+                    for name in files:
+                        path = root / name
+                        if path.name == "status.json" or path.suffix.lower() == ".log" or path.resolve() in protected:
+                            continue
+                        try:
+                            path.unlink()
+                        except OSError as exc:
+                            raise RuntimeError(
+                                f"中間データの削除に失敗しました（{removed}ファイル削除済み）: {path}: {exc}"
+                            ) from exc
+                        removed += 1
+                    for name in directories:
+                        path = root / name
+                        try:
+                            if path.is_symlink():
+                                if path.resolve() not in protected:
+                                    path.unlink()
+                                    removed += 1
+                            elif not any(path.iterdir()):
+                                path.rmdir()
+                        except OSError as exc:
+                            raise RuntimeError(
+                                f"中間データの整理に失敗しました（{removed}ファイル削除済み）: {path}: {exc}"
+                            ) from exc
+            return removed
+
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
             job_file = self._next_job_file()
@@ -330,6 +450,15 @@ class LocalJobManager:
         return job_file if job_file.exists() else None
 
     def _run_job(self, queue_file: Path) -> None:
+        with self._lock:
+            self._active_job_id = queue_file.stem
+        try:
+            self._execute_job(queue_file)
+        finally:
+            with self._lock:
+                self._active_job_id = None
+
+    def _execute_job(self, queue_file: Path) -> None:
         job_id = queue_file.stem
         processing_file = self.processing_dir / queue_file.name
         try:
@@ -339,12 +468,24 @@ class LocalJobManager:
             self._update_status(job_id, "running", started_at=now_iso())
             command = self.command_builder(job, job_dir)
             environment = worker_environment()
+            options = job.get("options", {})
             if self.credential_provider is not None:
-                provider = str(job.get("options", {}).get("translation_backend", "gemini"))
+                provider = str(options.get("translation_backend", "gemini"))
                 credentials = self.credential_provider(provider, not (job_dir / "en.srt").exists())
                 environment.pop("GEMINI_API_KEY", None)
                 environment.pop("DEEPL_API_KEY", None)
                 environment.update(credentials)
+            tts_backend = str(options.get("tts_backend", "piper"))
+            if self.speech_credential_provider is not None:
+                speech_credentials = self.speech_credential_provider(
+                    tts_backend, str(options.get("azure_speech_region", "")),
+                )
+                environment.pop("AZURE_SPEECH_KEY", None)
+                environment.pop("AZURE_SPEECH_REGION", None)
+                environment.update(speech_credentials)
+            elif tts_backend == "piper":
+                environment.pop("AZURE_SPEECH_KEY", None)
+                environment.pop("AZURE_SPEECH_REGION", None)
             log_path = self.logs_dir / f"{job_id}.log"
             with log_path.open("w", encoding="utf-8") as log_file:
                 log_file.write("command: " + " ".join(command) + "\n")
@@ -365,6 +506,8 @@ class LocalJobManager:
             with self._lock:
                 self._process = None
                 self._process_job_id = None
+            if self.get_job(job_id)["status"] == "cancelled":
+                raise RuntimeError("ユーザーによりキャンセルされました")
             if return_code != 0:
                 raise RuntimeError(f"変換処理が失敗しました (exit code {return_code})")
             local_output = self._ensure_output(job_dir)

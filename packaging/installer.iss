@@ -26,7 +26,7 @@ WizardStyle=modern
 UninstallDisplayIcon={app}\TranslateService.exe
 CloseApplications=yes
 RestartApplications=no
-LicenseFile={#BundleDir}\_internal\third-party-notices\TranslateService-LICENSE.txt
+LicenseFile={#BundleDir}\_internal\third-party-notices\TranslateService-BUNDLED-LICENSE.txt
 
 [Files]
 Source: "{#BundleDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

@@ -1,0 +1,28 @@
+Piper voice license and provenance evidence
+==========================================
+
+Bundled model: en_US-ljspeech-medium, medium quality
+Immutable Piper voice repository revision:
+https://huggingface.co/rhasspy/piper-voices/tree/c10ece1aade47bb51c153c893d14e5bf8e5b7117/en/en_US/ljspeech/medium
+The ONNX model, JSON configuration, and MODEL_CARD are pinned and SHA-256
+verified as recorded in piper_model.json.
+
+The pinned MODEL_CARD identifies the model as “ljspeech (medium)”, identifies
+the dataset as public domain, and points to Bryce Beattie's training page:
+https://brycebeattie.com/files/tts/
+
+The cited creator page labels its voice models “License: public domain” and
+states that the recordings used for its voice models were public domain.
+The LJ Speech dataset page independently states: “This dataset is in the
+public domain in the US ... There are no restrictions on its use.”
+https://keithito.com/LJ-Speech-Dataset/
+
+The creator page's downloadable mv2.onnx/mv2.onnx.json files are a separate
+multi-voice model, not the en_US-ljspeech-medium files bundled here. This
+distribution therefore identifies the exact bundled artifacts by their
+immutable Hugging Face repository revision and hashes; it does not claim they
+are byte-identical to the creator page's mv2 downloads.
+
+Evidence pages consulted 2026-10-10. Model and config bytes are the pinned
+Hugging Face artifacts; the associated card and cited dataset/creator pages
+provide model provenance and public-domain licensing context.
