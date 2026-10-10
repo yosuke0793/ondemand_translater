@@ -698,6 +698,8 @@ def ensure_edge_tts() -> None:
 
 
 def get_edge_tts_command() -> list[str]:
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--edge-tts"]
     edge_tts_bin = shutil.which("edge-tts")
     if edge_tts_bin:
         return [edge_tts_bin]

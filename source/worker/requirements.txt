@@ -4,3 +4,4 @@ edge-tts>=7,<8
 requests>=2.31,<3
 pytesseract>=0.3.10,<1
 opencv-python-headless>=4.10,<5
+keyring>=25,<26

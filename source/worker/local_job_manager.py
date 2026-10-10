@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from app_runtime import is_bundled, worker_command, worker_environment
 
 TERMINAL_STATES = {"done", "error", "cancelled"}
 VIDEO_SUFFIXES = {".mp4", ".mkv", ".mov", ".m4v", ".avi", ".webm", ".mpeg", ".mpg"}
@@ -56,11 +57,13 @@ class LocalJobManager:
         worker_root: Path | None = None,
         command_builder: Callable[[dict, Path], list[str]] | None = None,
         poll_interval: float = 1.0,
+        credential_provider: Callable[[str, bool], dict[str, str]] | None = None,
     ) -> None:
         self.data_dir = Path(data_dir).expanduser().resolve()
         self.worker_root = (worker_root or Path(__file__).resolve().parent).resolve()
         self.command_builder = command_builder or self._default_command
         self.poll_interval = max(0.1, poll_interval)
+        self.credential_provider = credential_provider
         self.queue_dir = self.data_dir / "queue"
         self.processing_dir = self.data_dir / "processing"
         self.done_dir = self.data_dir / "done"
@@ -144,11 +147,7 @@ class LocalJobManager:
 
     def _default_command(self, job: dict, job_dir: Path) -> list[str]:
         options = job.get("options", {})
-        python_executable = os.environ.get("TRANSLATE_WORKER_PYTHON", sys.executable)
-        command = [
-            python_executable,
-            "-m",
-            "lecture_poc",
+        command = worker_command() + [
             "--input",
             str(job_dir / "input.mp4"),
             "--outdir",
@@ -339,6 +338,13 @@ class LocalJobManager:
             job_dir = self.jobs_dir / job_id
             self._update_status(job_id, "running", started_at=now_iso())
             command = self.command_builder(job, job_dir)
+            environment = worker_environment()
+            if self.credential_provider is not None:
+                provider = str(job.get("options", {}).get("translation_backend", "gemini"))
+                credentials = self.credential_provider(provider, not (job_dir / "en.srt").exists())
+                environment.pop("GEMINI_API_KEY", None)
+                environment.pop("DEEPL_API_KEY", None)
+                environment.update(credentials)
             log_path = self.logs_dir / f"{job_id}.log"
             with log_path.open("w", encoding="utf-8") as log_file:
                 log_file.write("command: " + " ".join(command) + "\n")
@@ -347,11 +353,13 @@ class LocalJobManager:
                     self._process_job_id = job_id
                     self._process = subprocess.Popen(
                         command,
-                        cwd=self.worker_root,
+                        cwd=job_dir if is_bundled() else self.worker_root,
+                        env=environment,
                         stdout=log_file,
                         stderr=subprocess.STDOUT,
                         text=True,
                         start_new_session=True,
+                        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
                     )
                 return_code = self._wait_for_process(job_id, self._process, job_dir)
             with self._lock:

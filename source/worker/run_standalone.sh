@@ -63,6 +63,7 @@ modules = (
     "requests",
     "cv2",
     "pytesseract",
+    "keyring",
 )
 print(" ".join(module for module in modules if importlib.util.find_spec(module) is None))
 PY

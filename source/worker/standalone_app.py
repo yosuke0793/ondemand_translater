@@ -7,11 +7,16 @@ import subprocess
 import csv
 import json
 import os
+import multiprocessing
+import sys
 import tkinter as tk
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from local_job_manager import LocalJobManager, default_data_dir
+from app_runtime import app_version, bundle_self_test, configure_runtime, resource_root
+from credential_store import API_VARIABLES, CredentialError, CredentialStore
 
 
 VOICE_OPTIONS = {
@@ -29,7 +34,7 @@ VOICE_OPTIONS = {
 DEFAULT_VOICE_LABEL = next(
     label for label, voice_name in VOICE_OPTIONS.items() if voice_name == "en-US-AriaNeural"
 )
-DEFAULT_GLOSSARY_PATH = Path(__file__).resolve().parent / "lecture_poc" / "prompts" / "engineering_terms.csv"
+DEFAULT_GLOSSARY_PATH = resource_root() / "lecture_poc" / "prompts" / "engineering_terms.csv"
 CUSTOM_GLOSSARY_FILENAME = "engineering_terms_custom.csv"
 
 
@@ -88,9 +93,12 @@ def write_glossary_csv(path: Path, terms: list[str]) -> None:
 class StandaloneApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("Translate Service")
+        self.root.title(f"Translate Service {app_version()}")
         self.root.minsize(760, 520)
-        self.manager = LocalJobManager(default_data_dir())
+        self.credentials = CredentialStore()
+        self.manager = LocalJobManager(
+            default_data_dir(), credential_provider=self.credentials.worker_credentials
+        )
         self.manager.start()
         self.preferences_path = self.manager.data_dir / "settings.json"
         self.custom_glossary_path = self.manager.data_dir / CUSTOM_GLOSSARY_FILENAME
@@ -197,6 +205,7 @@ class StandaloneApp:
         actions.grid(row=6, column=0, columnspan=3, sticky="ew", pady=4)
         ttk.Button(actions, text="翻訳開始(キューに追加)", command=self.add_job, style="Accent.TButton").pack(side=tk.LEFT)
         ttk.Button(actions, text="選択ジョブをキャンセル", command=self.cancel_selected, style="Quiet.TButton").pack(side=tk.LEFT, padx=8)
+        ttk.Button(actions, text="APIキー設定", command=self.configure_api_keys, style="Quiet.TButton").pack(side=tk.LEFT)
         ttk.Label(actions, textvariable=self.status_var, style="App.TLabel").pack(side=tk.RIGHT)
 
         ttk.Label(container, text="ジョブ一覧", style="App.TLabel").grid(row=9, column=0, columnspan=3, sticky="w", pady=(14, 5))
@@ -310,6 +319,9 @@ class StandaloneApp:
 
     def add_job(self) -> None:
         try:
+            self.credentials.worker_credentials(
+                self.translation_backend.get(), not bool(self.english_srt_path.get().strip())
+            )
             glossary_terms = self.glossary_terms()
             self.save_custom_glossary()
             options = {
@@ -326,6 +338,10 @@ class StandaloneApp:
                 Path(self.japanese_srt_path.get()) if self.japanese_srt_path.get().strip() else None,
                 Path(self.english_srt_path.get()) if self.english_srt_path.get().strip() else None,
             )
+        except CredentialError as exc:
+            messagebox.showerror("APIキーを確認してください", str(exc), parent=self.root)
+            self.configure_api_keys()
+            return
         except (FileNotFoundError, OSError, ValueError) as exc:
             messagebox.showerror("ジョブを追加できません", str(exc))
             return
@@ -334,6 +350,77 @@ class StandaloneApp:
         self.japanese_srt_path.set("")
         self.english_srt_path.set("")
         self._refresh()
+
+    def configure_api_keys(self) -> None:
+        window = tk.Toplevel(self.root)
+        window.title("APIキー設定")
+        window.transient(self.root)
+        window.columnconfigure(1, weight=1)
+        ttk.Label(
+            window,
+            text="APIキーはWindowsの資格情報マネージャー／macOSのキーチェーンに保存します。\n"
+            "通常の設定ファイル・ジョブ・ログには保存しません。\n"
+            "環境変数にキーがある場合は環境変数が優先されます。\n"
+            "Google・DeepLへ翻訳テキストを送信します。料金・利用条件を確認してください。",
+            wraplength=560,
+        ).grid(row=0, column=0, columnspan=4, sticky="w", padx=12, pady=12)
+        entries: dict[str, ttk.Entry] = {}
+        statuses: dict[str, tk.StringVar] = {}
+
+        def refresh_status(provider: str) -> None:
+            try:
+                saved = self.credentials.saved_key(provider)
+            except CredentialError as exc:
+                statuses[provider].set("保存先にアクセスできません")
+                messagebox.showerror("APIキー設定", str(exc), parent=window)
+                return
+            status = "保存済み（値は表示しません）" if saved else "未保存"
+            if os.environ.get(API_VARIABLES[provider], "").strip():
+                status += "／環境変数を使用中"
+            statuses[provider].set(status)
+
+        def save(provider: str) -> None:
+            try:
+                self.credentials.save_key(provider, entries[provider].get())
+            except (CredentialError, ValueError) as exc:
+                messagebox.showerror("APIキーを保存できません", str(exc), parent=window)
+                return
+            entries[provider].delete(0, tk.END)
+            refresh_status(provider)
+            messagebox.showinfo(
+                "保存完了",
+                "OSの安全な保存先へ保存しました。登録する新しいジョブから使えます。\n"
+                "エラーになったジョブは再登録してください。",
+                parent=window,
+            )
+
+        def delete(provider: str) -> None:
+            if not messagebox.askyesno("APIキーを削除", f"{provider}の保存済みキーを削除しますか？", parent=window):
+                return
+            try:
+                self.credentials.delete_key(provider)
+            except CredentialError as exc:
+                messagebox.showerror("APIキーを削除できません", str(exc), parent=window)
+                return
+            entries[provider].delete(0, tk.END)
+            refresh_status(provider)
+
+        for index, provider in enumerate(API_VARIABLES):
+            row = 1 + index * 2
+            ttk.Label(window, text=provider).grid(row=row, column=0, padx=12, pady=6)
+            entry = ttk.Entry(window, show="*", width=42)
+            entry.grid(row=row, column=1, sticky="ew", padx=6, pady=6)
+            entries[provider] = entry
+            ttk.Button(window, text="保存", command=lambda name=provider: save(name)).grid(row=row, column=2, padx=6)
+            ttk.Button(window, text="削除", command=lambda name=provider: delete(name)).grid(row=row, column=3, padx=12)
+            statuses[provider] = tk.StringVar()
+            ttk.Label(window, textvariable=statuses[provider]).grid(row=row + 1, column=1, columnspan=3, sticky="w", padx=6)
+            refresh_status(provider)
+        ttk.Button(
+            window, text="Google AI Studioでキーを取得",
+            command=lambda: webbrowser.open("https://aistudio.google.com/apikey?hl=ja"),
+        ).grid(row=5, column=0, columnspan=2, sticky="w", padx=12, pady=12)
+        ttk.Button(window, text="閉じる", command=window.destroy).grid(row=5, column=3, padx=12, pady=12)
 
     def selected_job_id(self) -> str | None:
         selection = self.jobs.selection()
@@ -403,11 +490,21 @@ class StandaloneApp:
         )
 
 
-def main() -> None:
+def main() -> int:
+    multiprocessing.freeze_support()
+    if sys.argv[1:2] == ["--bundle-self-test"] and len(sys.argv) <= 3:
+        return bundle_self_test("gui", Path(sys.argv[2]) if len(sys.argv) == 3 else None)
     root = tk.Tk()
+    try:
+        configure_runtime()
+    except OSError as exc:
+        messagebox.showerror("起動できません", str(exc), parent=root)
+        root.destroy()
+        return 1
     StandaloneApp(root)
     root.mainloop()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

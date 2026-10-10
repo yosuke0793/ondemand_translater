@@ -23,6 +23,8 @@ Pythonは標準セットアップで3.10～3.13を選択します。依存関係
 ```text
 ondemand_translater/
 ├── docs/                            OS別導入・操作・調査・開発マニュアル
+├── packaging/                       同梱版のビルド・版番号・配布定義
+├── .github/workflows/               OS別ビルドとドラフトRelease生成
 ├── mac/
 │   ├── install.command / install.sh macOS依存環境の導入
 │   ├── build_app.sh                 Objective-Cランチャーの生成
@@ -35,6 +37,9 @@ ondemand_translater/
 │   └── run_standalone.ps1           GUI・変換Pythonの環境設定
 └── source/worker/
     ├── standalone_app.py            Tkinter GUI、設定・用語CSV
+    ├── app_runtime.py               同梱判定・資源・worker・FFmpegの解決
+    ├── bundled_worker.py            同梱変換workerとEdge TTSの入口
+    ├── credential_store.py          Keychain／Credential Manager
     ├── local_job_manager.py         SQLite、FIFO、子プロセス、進捗、成果物転送
     ├── run_standalone.sh            macOS等のPython起動
     ├── requirements.txt             標準依存
@@ -57,12 +62,15 @@ ondemand_translater/
 
 | 入口 | 経路・注意 |
 |---|---|
-| Mac Finder | `.app` → Objective-Cランチャー → `run_standalone.sh` → `.venv` のPython |
+| 同梱版（両OS） | 凍結GUI → 隣接する `TranslateWorker`／`TranslateWorker.exe`。Python・FFmpegも同梱 |
+| ソース版Mac Finder | `.app` → Objective-Cランチャー → `run_standalone.sh` → `.venv` のPython |
 | Macターミナル | `run_standalone.sh` → `.venv` または `TRANSLATE_PYTHON` |
 | Windowsショートカット | PowerShell → `run_standalone.ps1` → 生成済みexe。exeがない場合はPython GUI |
-| GUIから変換 | `LocalJobManager` → Pythonの `-m lecture_poc` |
+| ソース版GUIから変換 | `LocalJobManager` → Pythonの `-m lecture_poc` |
 
-Windowsランナーは `TRANSLATE_WORKER_PYTHON` を `.venv\Scripts\python.exe` に、`PYTHONPATH` をworkerディレクトリに設定します。凍結されたGUIの `sys.executable` を変換Pythonとして使わないために必要です。exeだけの直接起動や単体配布は、標準の動作経路ではありません。
+ソース版Windowsランナーは `TRANSLATE_WORKER_PYTHON` を `.venv\Scripts\python.exe` に、`PYTHONPATH` をworkerディレクトリに設定します。ソース版のexeだけをコピーしても動作しません。
+
+同梱版は凍結状態と資源の `BUNDLED` マーカーで識別し、旧Windowsビルドと区別します。workerは独立したPyInstallerプロセスとして起動し、外部Pythonの指定を除去します。プロンプトと `VERSION` は同梱資源から読みます。Edge TTSのCLIも同梱workerの `--edge-tts` 経由で起動し、システムの `edge-tts` や `python -m` には依存しません。両実行ファイルの `--bundle-self-test [report.json]` は画面・モデル取得・API通信なしで資源と依存のスモーク確認を行います。
 
 ### ジョブのライフサイクル
 
@@ -268,6 +276,8 @@ Geminiのモデル可用性はAPI側に依存します。モデル名を変更�
 
 `settings.json` は出力先と音声を保持します。翻訳バックエンド・文字起こしプリセットは起動時に既定へ戻ります。専門用語は既定CSVとユーザー追加CSVをマージし、重複を除きます。ジョブ用Whisperプロンプトは整形・長さ制限（現行480文字）の対象で、全用語を必ず反映するわけではありません。
 
+GUIの「APIキー設定」はmacOS KeychainまたはWindows Credential Managerだけを使います。平文ファイルへの代替保存はありません。環境変数のキーがあればOS保存値より優先します。サービス名は `TranslateService`、保存名は `GEMINI_API_KEY`／`DEEPL_API_KEY` です。キーはジョブJSON・引数・設定ファイルには保存せず、実行時に選択サービスのキーだけを子プロセス環境へ渡します。CLI単独では従来どおり環境変数を設定します。バックエンド障害の文面にキーが含まれる可能性があるため、その例外文面をGUIやログへ転記しないでください。
+
 ## 6. 成果物とクリーンアップ契約
 
 ### ジョブデータ
@@ -326,7 +336,7 @@ cd source\worker
 & .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-現行テストはGUIのヘルパーをインポートするためTkinterが必要ですが、画面を開く操作はしません。ジョブ変換は疑似子プロセスで検証します。実API、実動画、字幕プレーヤー、OS別インストーラーの実行成功をこのテストだけで保証しません。
+現行テストはGUIのヘルパーをインポートするためTkinterが必要ですが、画面を開く操作はしません。ジョブ変換は疑似子プロセスで検証します。同梱workerの解決、外部Pythonの排除、APIキーの非永続化、保存後のキー削除も検証します。実API、実動画、字幕プレーヤー、OS別インストーラーの実行成功をこのテストだけで保証しません。実OSのキー保存・読み出し・削除は配布前に別途確認します。
 
 カバーする主な項目：
 
@@ -368,6 +378,8 @@ Mac・Windowsのそれぞれで、機密情報を含まない短い動画を使�
 
 ## 8. ビルド・更新・配布
 
+初心者向けの同梱版は[同梱版ビルド・配布ガイド](PACKAGING.md)を参照してください。Gitにはコードと配布定義を保存し、生成物・モデル・ジョブ・キーを入れません。Windows SetupとmacOS DMGはOS別にビルドし、タグのワークフローは公開ではなくドラフトReleaseを作成します。署名・ライセンス・クリーンPCの確認後、保守担当者が公開します。以下の旧ビルドは開発用のソース実行経路です。
+
 以下はリポジトリルートから実行します。
 
 ### macOSビルド
@@ -386,7 +398,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\win\build_exe.ps1
 
 既存の `.venv` が必要です。PyInstallerを確認・導入し、`--windowed --onedir` で `win\dist\TranslateService\TranslateService.exe` を生成します。変換workerは仮想環境のPythonです。
 
-Pythonコードを変更した後、Windowsの生成済みGUIには再ビルドが必要です。プロンプト等のパッケージデータが凍結GUIの実行位置で利用できるかも確認してください。現行ビルドを、全リソースを同梱した単体ポータブルアプリとして扱わないでください。
+Pythonコードを変更した後、Windowsの生成済みGUIには再ビルドが必要です。プロンプト等のパッケージデータが凍結GUIの実行位置で利用できるかも確認してください。この旧ビルドを、全リソースを同梱した単体ポータブルアプリとして扱わないでください。
 
 ### 更新
 

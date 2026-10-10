@@ -1,0 +1,35 @@
+TranslateService distribution notices
+====================================
+
+TranslateService is MIT licensed; see TranslateService-LICENSE.txt.
+The separately executed FFmpeg/ffprobe programs are NOT covered by that license.
+
+FFmpeg / ffprobe
+---------------
+Unmodified static binaries and upstream license/readme texts are downloaded
+from the versioned b6.1.1 release of eugeneware/ffmpeg-static:
+https://github.com/eugeneware/ffmpeg-static/releases/tag/b6.1.1
+Build recipes and upstream references:
+https://github.com/eugeneware/ffmpeg-static
+https://ffmpeg.org/legal.html
+https://ffmpeg.org/download.html
+
+See ffmpeg/upstream-sha256.json for exact artifact URLs/digests and the
+platform LICENSE, README and captured binary build-configuration texts.
+These builds include GPL components. Do not represent the entire bundle
+as MIT-only. A release maintainer must arrange compliant corresponding
+source availability (including enabled codec libraries and build recipes)
+for redistributed binaries, not merely link to the latest FFmpeg source.
+An upstream URL alone is not a complete GPL source-distribution commitment.
+Draft releases are for review; do not publish until licensing obligations
+and the security/signing checklist in docs/PACKAGING.md have been reviewed.
+
+Python dependencies
+-------------------
+python-distributions.json identifies installed distribution versions/license
+metadata. Wheel-provided license/notice texts are retained under python/.
+dependency-lock.txt records the hash-locked native build dependency graph.
+Some upstream wheels do not include full license texts; review their
+metadata and obtain any missing required notices before public publication.
+Model weights, language packs and optional XTTS/Tesseract/Ollama installations
+are not included and have separate licenses.
