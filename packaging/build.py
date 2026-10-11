@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -397,8 +398,25 @@ def create_dmg(bundle: Path, destination: Path, target: str) -> None:
     image_root.mkdir()
     run(["ditto", str(bundle), str(image_root / bundle.name)])
     (image_root / "Applications").symlink_to("/Applications")
-    run(["hdiutil", "create", "-volname", f"TranslateService {version()}",
-         "-srcfolder", str(image_root), "-ov", "-format", "UDZO", str(destination)])
+    command = ["hdiutil", "create", "-volname", f"TranslateService {version()}",
+               "-srcfolder", str(image_root), "-ov", "-format", "UDZO", str(destination)]
+    for attempt in range(3):
+        try:
+            result = run(command, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            diagnostics = f"{exc.stdout or ''}\n{exc.stderr or ''}"
+            if "resource busy" not in diagnostics.lower() or attempt == 2:
+                raise
+            delay = 5 * (attempt + 1)
+            print(f"hdiutil create reported Resource busy; retrying in {delay}s "
+                  f"(attempt {attempt + 2}/3).", file=sys.stderr, flush=True)
+            time.sleep(delay)
+        else:
+            if result.stdout:
+                print(result.stdout, end="", flush=True)
+            if result.stderr:
+                print(result.stderr, end="", file=sys.stderr, flush=True)
+            break
     mount = WORK / "dmg-mount"
     mount.mkdir(exist_ok=True)
     run(["hdiutil", "attach", "-readonly", "-nobrowse", "-mountpoint", str(mount), str(destination)])

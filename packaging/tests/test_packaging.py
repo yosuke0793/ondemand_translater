@@ -31,6 +31,46 @@ import app_runtime
 
 
 class PackagingTests(unittest.TestCase):
+    def test_dmg_retries_only_resource_busy_and_still_verifies_image(self):
+        for failures, error_message in (
+            (1, "hdiutil: create failed - Resource busy"),
+            (3, "hdiutil: create failed - Resource busy"),
+            (1, "hdiutil: create failed - No space left on device"),
+        ):
+            with self.subTest(failures=failures, error=error_message), \
+                    tempfile.TemporaryDirectory() as temporary:
+                work = Path(temporary)
+                bundle = work / "TranslateService.app"
+                calls = []
+                remaining = failures
+
+                def execute(command, **kwargs):
+                    nonlocal remaining
+                    calls.append(command)
+                    if command[:2] == ["hdiutil", "create"] and remaining:
+                        remaining -= 1
+                        raise subprocess.CalledProcessError(1, command, stderr=error_message)
+                    if command[:2] == ["hdiutil", "attach"]:
+                        (work / "dmg-mount" / "Applications").symlink_to("/Applications")
+                    return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+                with patch.object(build, "WORK", work), patch.object(build, "run", side_effect=execute), \
+                        patch.object(build, "verify_bundle") as verify, \
+                        patch.object(build.time, "sleep") as sleep:
+                    if failures == 1 and "Resource busy" in error_message:
+                        build.create_dmg(bundle, work / "output.dmg", "macos-arm64")
+                        sleep.assert_called_once_with(5)
+                        verify.assert_called_once()
+                        self.assertEqual(calls[-1][:2], ["hdiutil", "detach"])
+                    else:
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            build.create_dmg(bundle, work / "output.dmg", "macos-arm64")
+                        verify.assert_not_called()
+                        self.assertEqual(sleep.call_count, 2 if failures == 3 else 0)
+                    creates = [cmd for cmd in calls if cmd[:2] == ["hdiutil", "create"]]
+                    self.assertEqual(len(creates), 2 if failures == 1 and "Resource busy" in error_message
+                                     else failures)
+
     @unittest.skipUnless(shutil.which("git"), "Git required")
     def test_windows_checkout_preserves_pinned_license_bytes(self):
         root = PACKAGING.parent

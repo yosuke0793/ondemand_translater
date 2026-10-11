@@ -132,6 +132,11 @@ rights and offers a Start Menu shortcut (desktop shortcut optional). Uninstall
 does not delete user jobs/settings or OS credential-store entries.
 
 macOS disk image contains `TranslateService.app` and an `/Applications` link.
+DMG creation retries only `hdiutil` failures reporting `Resource busy`, at most
+three attempts with 5- and 10-second waits. Every failure is logged; other errors
+and an exhausted retry limit fail the build. A successful image must still pass
+the mounted bundle verification. This does not identify or forcibly release
+the resource causing a busy error.
 Drag the app into Applications. The executable layout is:
 
 ```text
