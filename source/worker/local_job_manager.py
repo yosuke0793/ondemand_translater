@@ -150,6 +150,8 @@ class LocalJobManager:
 
     def _default_command(self, job: dict, job_dir: Path) -> list[str]:
         options = job.get("options", {})
+        if options.get("translation_backend", "gemini") not in ("gemini", "argos"):
+            raise ValueError("翻訳はGeminiまたはArgosで再登録してください。")
         tts_backend = str(options.get("tts_backend", "piper"))
         if tts_backend not in ("piper", "azure"):
             raise ValueError("旧Edge TTS／XTTSのジョブは利用できません。PiperまたはAzureで再登録してください。")
@@ -222,6 +224,8 @@ class LocalJobManager:
         english_srt: Path | None,
     ) -> str:
         source = Path(input_video).expanduser().resolve()
+        if (options or {}).get("translation_backend", "gemini") not in ("gemini", "argos"):
+            raise ValueError("翻訳はGeminiまたはArgosを選択してください。")
         if not source.is_file():
             raise FileNotFoundError(f"入力動画が見つかりません: {source}")
         if source.suffix.lower() != ".mp4":

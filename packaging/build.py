@@ -26,7 +26,7 @@ from piper_model import (
     DEFAULT_VOICE, MODEL_MANIFEST, MODEL_STAGE, load_model_manifest,
     model_metadata, stage_model, supported_voices,
 )
-from piper_source import copy_piper_notices, stage_piper_source
+from piper_source import application_source_files, copy_piper_notices, stage_piper_source
 
 
 def version(expected_tag: str | None = None) -> str:
@@ -64,7 +64,70 @@ def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
 
 def sha256(path: Path) -> str:
     with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+        digest = hashlib.sha256()
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+        return digest.hexdigest()
+
+
+def verify_source_hygiene() -> None:
+    """Reject accidentally tracked user/runtime data without requiring Git in source archives."""
+    inventory = application_source_files()
+    unsafe = [
+        path for path in inventory
+        if path.startswith("source/worker/data/") or path == "source/worker/data"
+    ]
+    if unsafe:
+        raise RuntimeError(f"Runtime data must not enter the corresponding-source inventory: {unsafe}")
+    if not (ROOT / ".git").exists():
+        return
+    result = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", "--cached", "-z", "--", "source/worker/data"],
+        check=True, capture_output=True,
+    )
+    tracked = [entry.decode("utf-8", errors="replace")
+               for entry in result.stdout.split(b"\0") if entry]
+    if tracked:
+        raise RuntimeError(
+            "Tracked user/runtime data under source/worker/data is forbidden: "
+            + ", ".join(tracked)
+        )
+
+
+def source_provenance() -> tuple[str, dict]:
+    """Return a shared revision identity for a Git checkout or verified source archive."""
+    explicit = os.environ.get("TRANSLATESERVICE_SOURCE_REVISION")
+    if explicit:
+        if not re.fullmatch(r"[0-9a-fA-F]{7,64}", explicit):
+            raise RuntimeError("TRANSLATESERVICE_SOURCE_REVISION must be a Git-style hex revision")
+        return explicit.lower(), {"kind": "explicit-revision", "value": explicit.lower()}
+    if (ROOT / ".git").exists():
+        result = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "--verify", "HEAD"],
+            check=True, capture_output=True, text=True,
+        )
+        revision = result.stdout.strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", revision):
+            raise RuntimeError(f"Git returned an invalid source revision: {revision!r}")
+        return revision.lower(), {"kind": "git-commit", "value": revision.lower()}
+    candidates = (
+        WORK / "piper-source" / "source-manifest.json",
+        ROOT.parent / "source-manifest.json",
+    )
+    manifest_path = next((path for path in candidates if path.is_file()), None)
+    if manifest_path is None:
+        raise RuntimeError(
+            "A Git checkout or corresponding-source source-manifest.json is required "
+            "to record build provenance"
+        )
+    manifest_bytes = manifest_path.read_bytes()
+    manifest = json.loads(manifest_bytes)
+    expected_inventory = {relative: sha256(path) for relative, path in application_source_files().items()}
+    if manifest.get("application_files") != expected_inventory:
+        raise RuntimeError("Source-manifest application inventory does not match this source tree")
+    digest = hashlib.sha256(manifest_bytes).hexdigest()
+    revision = f"source-manifest-sha256:{digest}"
+    return revision, {"kind": "source-manifest-sha256", "value": digest}
 
 
 def stage_ffmpeg(target: str) -> dict:
@@ -103,11 +166,14 @@ def generate_metadata(target: str) -> None:
     shutil.copy2(PACKAGING / "locks" / f"{target}.txt", notices / "dependency-lock.txt")
     shutil.copy2(MODEL_MANIFEST, notices / "piper_model.json")
     copy_piper_notices(notices / "piper")
+    from pyav_source import copy_notices as copy_pyav_notices
+
+    copy_pyav_notices(notices / "pyav")
     (notices / "TranslateService-BUNDLED-LICENSE.txt").write_text(
         "TranslateService Piper-enabled frozen distribution\n"
         "The combined distribution is provided under GPL-3.0-or-later.\n"
         "Original MIT notices for application components are retained below.\n"
-        "See THIRD_PARTY_NOTICES.txt and the matching Piper and FFmpeg source archives.\n\n"
+        "See THIRD_PARTY_NOTICES.txt and the matching Piper, FFmpeg and PyAV source archives.\n\n"
         + (notices / "piper" / "COPYING").read_text(encoding="utf-8")
         + "\n\nOriginal application component license:\n"
         + (ROOT / "LICENSE").read_text(encoding="utf-8"),
@@ -245,7 +311,77 @@ def verify_bundle(bundle: Path, target: str) -> list[dict]:
     if "--input" not in worker_help.stdout or "--outdir" not in worker_help.stdout:
         raise RuntimeError("Frozen worker did not expose the lecture_poc CLI")
     verify_media_tools(binary_dir, target, test_dir, environment)
+    verify_managed_pyav(bundle, target, test_dir, environment)
     return reports
+
+
+def verify_managed_pyav(bundle: Path, target: str, test_dir: Path, environment: dict) -> dict:
+    """Check PyAV provenance, bundled shared-library closure, and a real H.264 decode."""
+    from pyav_source import FFMPEG_LIBRARIES, decode_smoke, verify_installed
+
+    record = verify_installed(target)
+    paths = [path for path in bundle.rglob("*") if path.is_file()]
+    if not any(
+        path.suffix.lower() in (".pyd", ".so")
+        and ("av" in path.parts or path.name.startswith("_core"))
+        for path in paths
+    ):
+        raise RuntimeError("Frozen bundle is missing PyAV's compiled extension")
+    missing = [
+        library for library in FFMPEG_LIBRARIES
+        if not any(
+            library in path.name.lower()
+            and (path.suffix.lower() in (".dylib", ".dll") or ".dylib" in path.name.lower())
+            for path in paths
+        )
+    ]
+    if missing:
+        raise RuntimeError(f"Frozen bundle is missing managed FFmpeg shared libraries: {missing}")
+    for name in ("PyAV-LICENSE.txt", "FFmpeg-COPYING.LGPLv2.1.txt", "managed-source-manifest.json"):
+        if not (WORK / "notices" / "pyav" / name).is_file():
+            raise RuntimeError(f"Missing managed PyAV/FFmpeg notice: {name}")
+    fixture = test_dir / "pyav-managed-decode-smoke.mp4"
+    suffix = ".exe" if target.startswith("windows") else ""
+    run([
+        str(executable_dir(bundle) / f"ffmpeg{suffix}"), "-nostdin", "-hide_banner",
+        "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+        "color=c=blue:s=160x120:r=10:d=0.5", "-c:v", "libx264",
+        "-pix_fmt", "yuv420p", str(fixture),
+    ], cwd=test_dir, env=environment, capture_output=True, text=True, timeout=60)
+    try:
+        result = decode_smoke(target, fixture)
+        frozen_environment = dict(environment)
+        for key in ("DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH", "LD_LIBRARY_PATH"):
+            frozen_environment.pop(key, None)
+        frozen_report = test_dir / "pyav-frozen-decode.json"
+        frozen_report.unlink(missing_ok=True)
+        source_libdir = WORK / "pyav" / target / "prefix" / "lib"
+        hidden_libdir = source_libdir.with_name("lib.frozen-smoke-unavailable")
+        hide_source_libraries = target.startswith("macos")
+        if hide_source_libraries:
+            if hidden_libdir.exists():
+                raise RuntimeError(f"Unexpected prior frozen-smoke directory: {hidden_libdir}")
+            source_libdir.rename(hidden_libdir)
+        try:
+            run([
+                str(executable_dir(bundle) / f"TranslateWorker{suffix}"),
+                "--pyav-decode-self-test", str(fixture), str(frozen_report),
+            ], cwd=test_dir, env=frozen_environment, capture_output=True, text=True, timeout=60)
+        finally:
+            if hide_source_libraries:
+                hidden_libdir.rename(source_libdir)
+        frozen = json.loads(frozen_report.read_text(encoding="utf-8"))
+        if frozen != {"pyav_version": "15.1.0",
+                      "decoded": {"codec": "h264", "width": 160, "height": 120}}:
+            raise RuntimeError("Frozen PyAV decode did not use the expected managed build")
+        result["frozen_decode"] = frozen
+    finally:
+        fixture.unlink(missing_ok=True)
+    report_path = WORK / "pyav" / target / "decode-smoke.json"
+    report_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if record.get("pyav_version") not in (None, "15.1.0"):
+        raise RuntimeError("Managed PyAV source build version changed")
+    return result
 
 
 def create_zip(bundle: Path, destination: Path) -> None:
@@ -275,6 +411,7 @@ def create_dmg(bundle: Path, destination: Path, target: str) -> None:
 
 
 def build(target: str) -> None:
+    verify_source_hygiene()
     if sys.version_info[:2] != (3, 12) or sys.prefix == sys.base_prefix:
         raise RuntimeError("Build requires the dedicated CPython 3.12 virtual environment")
     expected = PACKAGING / ".venv-build"
@@ -283,6 +420,9 @@ def build(target: str) -> None:
     for name in ("standalone_app.py", "bundled_worker.py", "app_runtime.py", "credential_store.py"):
         if not (ROOT / "source" / "worker" / name).is_file():
             raise RuntimeError(f"Missing source entrypoint/runtime: {name}")
+    from pyav_source import verify_installed as verify_pyav_install
+
+    pyav_info = verify_pyav_install(target)
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
     # Remove stale output before any native step can fail.
     for path in ARTIFACTS.iterdir():
@@ -294,6 +434,10 @@ def build(target: str) -> None:
     model_manifest = load_model_manifest()
     piper_source = stage_piper_source()
     piper_source_name = f"TranslateService-{version()}-{target}-piper-source.tar.gz"
+    pyav_source_name = f"TranslateService-{version()}-{target}-pyav-source.tar.gz"
+    pyav_archive = WORK / "pyav" / target / "source-archive" / pyav_source_name
+    if not pyav_archive.is_file() or sha256(pyav_archive) != pyav_info.get("source_archive_sha256"):
+        raise RuntimeError("Missing or changed managed PyAV/FFmpeg corresponding-source archive")
     generate_metadata(target)
     source_archive = Path(media_info["source_archive"])
     source_name = f"TranslateService-{version()}-{target}-ffmpeg-source.tar.gz"
@@ -308,9 +452,24 @@ def build(target: str) -> None:
         raise RuntimeError("Missing Piper/eSpeak-NG corresponding source archive")
     piper_source_sha256 = sha256(piper_source)
     shutil.copy2(piper_source, ARTIFACTS / piper_source_name)
+    shutil.copy2(pyav_archive, ARTIFACTS / pyav_source_name)
+    pyav_info["source_archive"] = pyav_source_name
+    pyav_info["source_archive_sha256"] = sha256(ARTIFACTS / pyav_source_name)
+    build_environment = os.environ.copy()
+    pyav_prefix = WORK / "pyav" / target / "prefix"
+    if target == "windows-x64":
+        build_environment["PATH"] = (
+            str(pyav_prefix / "bin") + os.pathsep + build_environment.get("PATH", "")
+        )
+    else:
+        build_environment["DYLD_LIBRARY_PATH"] = os.pathsep.join(
+            part for part in (
+                str(pyav_prefix / "lib"), build_environment.get("DYLD_LIBRARY_PATH", ""),
+            ) if part
+        )
     run([sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm",
          "--workpath", str(WORK / "pyinstaller"), "--distpath", str(WORK / "dist"),
-         str(PACKAGING / "TranslateService.spec")], cwd=ROOT)
+         str(PACKAGING / "TranslateService.spec")], cwd=ROOT, env=build_environment)
     bundle = WORK / "dist" / ("TranslateService.app" if target.startswith("macos") else "TranslateService")
     binary_dir = executable_dir(bundle)
     for binary in (WORK / "ffmpeg" / target).iterdir():
@@ -334,12 +493,21 @@ def build(target: str) -> None:
              f"/DOutputDir={ARTIFACTS}", str(PACKAGING / "installer.iss")])
     else:
         create_dmg(bundle, ARTIFACTS / f"{prefix}.dmg", target)
-    revision = run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    revision, provenance = source_provenance()
     (ARTIFACTS / f"{prefix}-build-info.json").write_text(
         json.dumps({"version": version(), "target": target, "commit": revision,
+                    "source_provenance": provenance,
                     "python": sys.version, "self_tests": reports,
                     "dependency_lock_sha256": sha256(PACKAGING / "locks" / f"{target}.txt"),
                     "ffmpeg_manifest_sha256": sha256(PACKAGING / "ffmpeg.json"),
+                    "pyav": {**{key: pyav_info[key] for key in (
+                        "pyav_version", "pyav_license", "ffmpeg_version", "ffmpeg_license",
+                        "nonfree", "manifest_sha256", "sources", "configure_args",
+                        "shared_library_sha256", "pyav_wheel_sha256", "source_archive",
+                        "source_archive_sha256",
+                    )}, "decode_smoke": json.loads(
+                        (WORK / "pyav" / target / "decode-smoke.json").read_text(encoding="utf-8")
+                    )},
                     "piper": {
                         "runtime": f'{model_manifest["runtime"]["distribution"]}=='
                         f'{model_manifest["runtime"]["version"]}',
@@ -375,6 +543,7 @@ def main() -> None:
     args = parser.parse_args()
     value = version(args.expected_tag)
     if args.command == "validate":
+        verify_source_hygiene()
         print(value)
         return
     target = native_target()

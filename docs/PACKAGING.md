@@ -23,7 +23,10 @@ targets.
 ## Local build
 
 Use a clean checkout. Commit all intended changes before a release so the build
-revision is meaningful. Never put credentials, models, user media or databases
+revision is meaningful. Builds from a corresponding-source archive (which has
+no `.git`) record the SHA-256 of its verified application source manifest
+instead; `TRANSLATESERVICE_SOURCE_REVISION` may supply an explicit Git-style
+revision when needed. Never put credentials, models, user media or databases
 in packaging inputs.
 
 macOS prerequisites: native CPython 3.12 including Tcl/Tk (python.org recommended),
@@ -70,8 +73,32 @@ hash-locked native dependency set, run `pip check`, and build in
 bundles, source data or old platform launchers. All build caches and scratch
 files stay under `packaging/.work`. Downloads are from public PyPI and the pinned
 upstream source URLs; no source or credentials are uploaded by local build scripts.
+Before freezing, each wrapper builds the pinned PyAV source against managed
+shared FFmpeg libraries, force-installs that locally built wheel without
+dependency resolution or index access, then verifies its linkage and wheel
+hash. The upstream PyAV wheel hashes remain in the locked dependency graph for
+faster-whisper's dependency resolution, but the wheel is replaced before
+PyInstaller runs and the build aborts unless the installed extensions link to
+the locally built shared libraries.
+On Windows, `.dll.a` files are MinGW import libraries, not static FFmpeg
+archives; they are required for linking but are not distributed as runtime
+libraries. True static `.a` libraries are rejected. The pinned setuptools
+toolchain runs `build_ext --compiler=mingw32` before `bdist_wheel`; the build
+first compiles, links, and imports a small extension in the selected CPython
+3.12 x64 interpreter. An incompatible compiler, Python import library, or
+runtime fails this preflight rather than falling back to MSVC or an upstream
+PyAV wheel.
 The dedicated environment is required by `build.py build`; running that command
 from an unrelated environment fails.
+
+The bundle gate also asks the frozen worker to decode the H.264 fixture with
+library-path overrides removed. This checks PyInstaller's relocated DLL/dylib
+loading in addition to decoding in the source-build interpreter; presence of
+library files alone is not accepted as proof. On macOS the source prefix's
+library directory is temporarily hidden during that frozen-worker check and
+restored on success or failure, preventing absolute build paths from masking
+missing or incorrectly relocated bundled libraries. The corresponding-source archive
+contains the PyAV extension compilation log as well as the FFmpeg build logs.
 
 The wrappers require several GB of disk and may download substantial PyTorch,
 OpenCV and speech/translation dependencies. The bundled faster-whisper VAD
@@ -105,8 +132,8 @@ Windows: TranslateService/{TranslateService.exe,TranslateWorker.exe,ffmpeg.exe,f
 macOS:   TranslateService.app/Contents/MacOS/{TranslateService,TranslateWorker,ffmpeg,ffprobe}
 ```
 
-PyInstaller's internal resource root contains `BUNDLED`, `VERSION`, `version.json`, all
-`lecture_poc/prompts/` files and `third-party-notices/`. Both analyses include
+PyInstaller's internal resource root contains `BUNDLED`, `VERSION`, `version.json`,
+`docs/`, all `lecture_poc/prompts/` files and `third-party-notices/`. Both analyses include
 `source/worker` in their module search paths; the GUI analysis is lightweight
 and the worker analysis owns the conversion dependencies. Platform-specific
 keyring backends and `piper.espeakbridge` have explicit hidden imports. Compiled
@@ -128,6 +155,29 @@ FFmpeg/ffprobe are now built from source for Windows x64 and both Mac CPUs.
 downloads fail closed on hash mismatch. The build recipe uses a minimal GPLv3
 configuration with H.264/libx264, AAC, MP3 and libass subtitles. Nonfree
 components and unrequested optional codecs are excluded.
+
+PyAV 15.1.0 is also built from its pinned PyPI source distribution, not retained
+from the upstream binary wheel. `packaging/pyav.json` records and hash-pins that
+sdist and FFmpeg 7.1.1. A separate recipe builds only shared FFmpeg libraries
+for PyAV, disables GPL/nonfree/version-3 components, encoders, muxers, network
+protocols and static libraries, and uses FFmpeg's LGPL-2.1-or-later terms.
+It does not build or enable x264/x265. The DLL/dylib dependencies are checked
+against PyAV's native extensions and must be included in the frozen bundle.
+The packaging run creates an H.264 fixture with the separately built GPL
+FFmpeg executable and verifies that the installed PyAV extension decodes an
+actual frame through these managed shared libraries.
+
+The PyAV binding itself is BSD-3-Clause; the linked shared FFmpeg libraries
+are LGPL-2.1-or-later. Their exact source archive hashes, build recipe,
+configure/build records and license texts are included in
+`TranslateService-<version>-<target>-pyav-source.tar.gz`. The bundle carries
+PyAV's BSD notice and FFmpeg's LGPL text under `third-party-notices/pyav/`.
+Publish that archive alongside both the GPL FFmpeg source archive and the
+Piper/application source archive. The release gate requires all three for
+every platform and rejects changed pins, license/build-policy violations,
+missing LGPL notices or absent decode-smoke evidence. These source archives
+are separate because the standalone GPL FFmpeg executable and PyAV's LGPL
+shared libraries are distinct builds with different license obligations.
 
 The former `eugeneware/ffmpeg-static` Apple Silicon binary explicitly reports
 `Therefore it is not legally redistributable` under `-L`. Do not distribute
@@ -270,9 +320,12 @@ tools. Native lock files are generated with **uv 0.8.22**, contain exact
 transitive versions and SHA-256 hashes, and are committed under `packaging/locks`.
 Torch 2.2.2 and NumPy 1.26.4 intentionally preserve Intel macOS wheels/ABI;
 review/test those constraints before upgrades. No unresolved runtime transitive
-version ranges remain in the committed native locks. All packages except
-Argos's strictly required `sacremoses==0.0.53` use binary wheels only. That
-upstream version has no wheel, so its hash-pinned pure-Python sdist is built
+version ranges remain in the committed native locks. All locked packages except
+Argos's strictly required `sacremoses==0.0.53` use binary wheels only. PyAV's
+upstream wheel is installed only as a dependency-resolution placeholder and is
+replaced before freezing by the hash-pinned source build described above;
+`cython==3.1.4` is an explicit, per-platform hash-locked build dependency.
+The Argos upstream version has no wheel, so its hash-pinned pure-Python sdist is built
 without build isolation using the hash-locked setuptools/wheel bootstrap
 environment; no unpinned build dependencies are fetched. A missing native wheel
 fails rather than silently compiling an uncontrolled native toolchain.
@@ -310,6 +363,10 @@ graph, **not a byte-identical/reproducible-build guarantee**. Actions pins Pytho
 Distribution checks reject job databases (including WAL/SHM sidecars), job/log/
 queue/processing directories, user settings and custom glossary files anywhere
 in the bundle. Only explicitly selected application resources are collected.
+`build.py validate` and `build.py build` also reject any indexed files under
+`source/worker/data/` and any corresponding-source inventory entry in that
+runtime-data tree. Source-archive builds without Git use the source manifest for
+revision identity and do not require a `.git` directory.
 Existing history on a test PC comes from its external user data directory and
 is intentionally preserved across installations; do not clear it during build
 or app startup. Use a fresh user account/data directory for first-run testing.
@@ -360,11 +417,15 @@ TranslateService-0.1.0-macos-arm64.dmg
 TranslateService-0.1.0-macos-x64.dmg
 TranslateService-0.1.0-<target>-build-info.json
 TranslateService-0.1.0-<target>-ffmpeg-source.tar.gz
+TranslateService-0.1.0-<target>-pyav-source.tar.gz
+TranslateService-0.1.0-<target>-piper-source.tar.gz
 TranslateService-0.1.0-<target>-SHA256SUMS.txt
 ```
 
-Build information records commit, native Python, lock/FFmpeg manifest hashes,
-corresponding-source archive/hash and license policy, and frozen smoke reports.
+Build information records the Git revision or source-manifest SHA-256,
+native Python, lock/FFmpeg/PyAV manifest hashes, corresponding-source
+archive/hash and license policy, the PyAV H.264 decode smoke report, and frozen
+smoke reports.
 Checksums cover each target's distributables, sources and build information. Before handing binaries to users, verify hashes on a clean machine
 without developer Python/FFmpeg, test GUI launch and credential-store behavior,
 and exercise a real conversion with provider access separately.

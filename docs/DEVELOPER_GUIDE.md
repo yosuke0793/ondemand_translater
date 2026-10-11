@@ -2,6 +2,8 @@
 
 この文書は、コード変更、検証、CLI実行、OS別アプリ生成を行う開発者向けです。初心者向けの通常導入・操作は[ユーザーガイド](USER_GUIDE.md)、不具合の切り分けは[トラブルシューティング](TROUBLESHOOTING.md)を参照してください。
 
+公開前には[利用上の注意・規約](TERMS_AND_DISCLAIMER.md)と[配布ガイド](PACKAGING.md)も確認してください。ジョブ・動画・音声・設定等の実行時データはGit管理・ソース配布の対象にしません。既存データをGit管理から外しても過去コミットには残るため、機密・個人情報の公開可否は別途確認します。Git履歴の除去は共同作業への影響を確認し、管理者の承認なしに行わないでください。
+
 ## 目次
 
 - [1. 対象範囲と構成](#1-対象範囲と構成)
@@ -171,7 +173,7 @@ $env:PYTHONPATH = (Resolve-Path .\source\worker).Path
 & .\source\worker\.venv\Scripts\python.exe .\source\worker\standalone_app.py
 ```
 
-キーは環境変数を使い、コマンドラインの `--gemini-api-key`／`--deepl-api-key` へ直接書く運用を避けます。履歴、プロセス一覧、ログ等への露出を減らすためです。
+キーは環境変数を使い、コマンドラインの `--gemini-api-key` へ直接書く運用を避けます。履歴、プロセス一覧、ログ等への露出を減らすためです。
 
 ## 4. CLIでパイプラインを実行する
 
@@ -230,7 +232,7 @@ Windowsでは `.venv\Scripts\python.exe` を使います。引数定義の正本
 | `--lowpass-cutoff-hz` | 音声前処理。既定6500Hz、0以下で無効 |
 | `--jp-clean-mode` | `off`／`rule`／`ollama`。GUIは `rule` |
 | `--ollama-model` | ローカル整形モデル。Ollama本体とモデルの準備は別途必要 |
-| `--translation-backend` | `gemini`／`deepl`／`argos` |
+| `--translation-backend` | `gemini`／`argos` |
 | `--gemini-model` | 初期モデル。現行既定は `gemini-3.1-flash-lite` |
 | `--voice`、`--tts-volume`、`--tts-workers` | 音声・音量・音声生成並列数 |
 | `--tts-timing-mode` | `strict`／`no-overlap` |
@@ -272,7 +274,6 @@ CLIは `final.mp4`、字幕選択時の `final_soft_sub.mp4`／`final_sub.mp4` �
 | 名前 | 用途・注意 |
 |---|---|
 | `GEMINI_API_KEY` | Gemini認証。キーをログ・Gitへ保存しない |
-| `DEEPL_API_KEY` | DeepL認証 |
 | `TRANSLATE_DATA_DIR` | マネージャーのデータ場所。Mac Finderランチャーは独自に設定 |
 | `TRANSLATE_PYTHON` | Macインストーラー／シェルランナーのPython指定。対応バージョンを選ぶ |
 | `TRANSLATE_WORKER_PYTHON` | GUIから起動する変換Python。Windowsランナーが設定 |
@@ -283,11 +284,11 @@ CLIは `final.mp4`、字幕選択時の `final_soft_sub.mp4`／`final_sub.mp4` �
 | `GEMINI_BATCH_MAX_CHARS` | 翻訳バッチの文字数上限 |
 | `GEMINI_ONE_SHOT_MAX_TEXTS` | 一括送信からバッチ送信へ切り替える基準 |
 
-Geminiのモデル可用性はAPI側に依存します。モデル名を変更した際は、フォールバック・モデル取得の動作も確認してください。DeepLの現行送信先は `api-free.deepl.com` です。Pro用エンドポイント切替をGUIの既存機能として案内しないでください。
+Geminiのモデル可用性はAPI側に依存します。モデル名を変更した際は、フォールバック・モデル取得の動作も確認してください。Geminiの利用上限に達し候補モデルを使い切ると、Argosフォールバックを使います。翻訳バックエンドはGeminiとArgosです。
 
 `settings.json` は出力先・音声とAPIキー画面の起動時表示設定を保持します。`hide_api_keys_on_startup` は文字列 `"true"`／`"false"` で保存し、未設定時は画面を表示します。表示はGUI構築後の `after_idle` で行い、「次回から表示しない」の変更時に保存します。翻訳バックエンド・文字起こしプリセットは起動時に既定へ戻ります。専門用語は既定CSVとユーザー追加CSVをマージし、重複を除きます。ジョブ用Whisperプロンプトは整形・長さ制限（現行480文字）の対象で、全用語を必ず反映するわけではありません。
 
-GUIの「APIキー設定」はmacOS KeychainまたはWindows Credential Managerだけを使います。平文ファイルへの代替保存はありません。環境変数のキーがあればOS保存値より優先します。サービス名は `TranslateService`、保存名は `GEMINI_API_KEY`／`DEEPL_API_KEY` です。キーはジョブJSON・引数・設定ファイルには保存せず、実行時に選択サービスのキーだけを子プロセス環境へ渡します。CLI単独では従来どおり環境変数を設定します。バックエンド障害の文面にキーが含まれる可能性があるため、その例外文面をGUIやログへ転記しないでください。
+GUIの「APIキー設定」はmacOS KeychainまたはWindows Credential Managerだけを使います。平文ファイルへの代替保存はありません。環境変数のキーがあればOS保存値より優先します。サービス名は `TranslateService`、保存名は `GEMINI_API_KEY`／`AZURE_SPEECH_KEY` です。キーはジョブJSON・引数・設定ファイルには保存せず、実行時に選択サービスのキーだけを子プロセス環境へ渡します。CLI単独では従来どおり環境変数を設定します。バックエンド障害の文面にキーが含まれる可能性があるため、その例外文面をGUIやログへ転記しないでください。
 
 ## 6. 成果物とクリーンアップ契約
 

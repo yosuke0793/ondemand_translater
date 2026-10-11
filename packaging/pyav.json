@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "pyav": {
+    "name": "av-15.1.0.tar.gz",
+    "version": "15.1.0",
+    "url": "https://files.pythonhosted.org/packages/e9/c3/83e6e73d1592bc54436eae0bc61704ae0cff0c3cfbde7b58af9ed67ebb49/av-15.1.0.tar.gz",
+    "sha256": "39cda2dc810e11c1938f8cb5759c41d6b630550236b3365790e67a313660ec85",
+    "license": "BSD-3-Clause"
+  },
+  "ffmpeg": {
+    "name": "ffmpeg-7.1.1.tar.xz",
+    "version": "7.1.1",
+    "url": "https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz",
+    "sha256": "733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1",
+    "license": "LGPL-2.1-or-later"
+  },
+  "recipe": {
+    "license": "LGPL-2.1-or-later",
+    "nonfree": false,
+    "configure_args": [
+      "--disable-gpl",
+      "--disable-nonfree",
+      "--disable-version3",
+      "--disable-static",
+      "--enable-shared",
+      "--disable-programs",
+      "--disable-doc",
+      "--disable-debug",
+      "--disable-autodetect",
+      "--disable-network",
+      "--disable-encoders",
+      "--disable-muxers",
+      "--disable-devices",
+      "--enable-protocol=file,pipe,data",
+      "--enable-pic",
+      "--disable-x86asm"
+    ],
+    "required_libraries": [
+      "avformat",
+      "avcodec",
+      "avdevice",
+      "avutil",
+      "avfilter",
+      "swscale",
+      "swresample"
+    ]
+  }
+}

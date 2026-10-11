@@ -27,4 +27,7 @@ TARGET="$("$PYTHON" -c 'import platform; print("macos-arm64" if platform.machine
 "$PYTHON" -m pip install --only-binary=:all: --require-hashes -r packaging/locks/bootstrap.txt
 "$PYTHON" -m pip install --only-binary=:all: --no-binary=sacremoses --no-build-isolation --require-hashes -r "packaging/locks/$TARGET.txt"
 "$PYTHON" -m pip check
+"$PYTHON" packaging/pyav_source.py build-install --target "$TARGET"
+export DYLD_LIBRARY_PATH="$ROOT/packaging/.work/pyav/$TARGET/prefix/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+"$PYTHON" packaging/pyav_source.py verify --target "$TARGET"
 "$PYTHON" packaging/build.py build --target "$TARGET" "$@"

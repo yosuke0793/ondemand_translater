@@ -51,7 +51,6 @@ class PipelineConfig:
     jp_clean_mode: str = "rule"
     ollama_model: str = "qwen2.5:7b-instruct"
     translation_backend: str = "gemini"
-    deepl_api_key: str | None = None
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-3.1-flash-lite"
     burn_subs: bool = False
@@ -116,8 +115,6 @@ TRANSCRIPTION_PRESETS: dict[str, TranscriptionSettings] = {
     ),
 }
 
-DEEPL_BATCH_MAX_TEXTS = 40
-DEEPL_BATCH_MAX_CHARS = 20_000
 GEMINI_BATCH_MAX_TEXTS_DEFAULT = 120
 GEMINI_BATCH_MAX_CHARS_DEFAULT = 48_000
 GEMINI_ONE_SHOT_MAX_TEXTS_DEFAULT = 100
@@ -208,6 +205,8 @@ def run_pipeline_stage(stage_name: str, func, *args) -> None:
 def run_pipeline(config: PipelineConfig) -> None:
     global PIPELINE_LOG_PATH
 
+    if config.translation_backend not in ("gemini", "argos"):
+        raise PipelineStepError("translate_jp_srt", "翻訳はGeminiまたはArgosを選択してください。")
     try:
         validate_tts_settings(config.tts_backend, config.voice, config.tts_volume)
     except TTSError as exc:
@@ -255,7 +254,6 @@ def run_pipeline(config: PipelineConfig) -> None:
         en_srt,
         config.force,
         config.translation_backend,
-        config.deepl_api_key,
         config.gemini_api_key,
         config.gemini_model,
     )
@@ -305,7 +303,6 @@ def run_pipeline(config: PipelineConfig) -> None:
             overlay_video,
             overlay_report_json,
             config.translation_backend,
-            config.deepl_api_key,
             config.gemini_api_key,
             config.gemini_model,
             config.video_text_overlay_fps,
@@ -1280,17 +1277,6 @@ def ensure_argos_ja_en() -> None:
     argostranslate.package.install_from_path(download_path)
 
 
-def get_deepl_api_key(config_value: str | None) -> str:
-    if config_value:
-        return config_value
-    env_value = os.getenv("DEEPL_API_KEY")
-    if env_value:
-        return env_value
-    raise RuntimeError(
-        "DeepL を使うには --deepl-api-key か環境変数 DEEPL_API_KEY を設定してください"
-    )
-
-
 def get_gemini_api_key(config_value: str | None) -> str:
     if config_value:
         return config_value
@@ -1376,21 +1362,6 @@ def is_gemini_alignment_error(exc: BaseException) -> bool:
     ]
     return any(keyword in message for keyword in keywords)
 
-
-def is_deepl_limit_error(exc: BaseException) -> bool:
-    # DeepL: 429 (rate limit), 456 (quota exceeded)
-    if has_http_status(exc, {429, 456}):
-        return True
-
-    message = "\n".join(str(item) for item in iterate_exception_chain(exc)).lower()
-    keywords = [
-        "quota exceeded",
-        "too many requests",
-        "rate limit",
-        "429",
-        "456",
-    ]
-    return any(keyword in message for keyword in keywords)
 
 
 def get_gemini_fallback_models(primary_model: str) -> list[str]:
@@ -1517,87 +1488,6 @@ def translate_with_argos(source_text: str) -> str:
         return argostranslate.translate.translate(line, "ja", "en")
 
     return translate_srt_text_lines(source_text, translate_line)
-
-
-def translate_with_deepl(source_text: str, deepl_api_key: str) -> str:
-    import requests
-
-    headers = {
-        "Authorization": f"DeepL-Auth-Key {deepl_api_key}",
-    }
-
-    translation_cache: dict[str, str] = {}
-
-    unique_lines: list[str] = []
-    seen_lines: set[str] = set()
-    for block_lines in split_srt_blocks(source_text):
-        block = parse_srt_block(block_lines)
-        for line in block.text_lines:
-            stripped = line.strip()
-            if not stripped or stripped in seen_lines:
-                continue
-            seen_lines.add(stripped)
-            unique_lines.append(stripped)
-
-    pending_lines = [line for line in unique_lines if line not in translation_cache]
-    batch: list[str] = []
-    batch_chars = 0
-
-    def flush_batch() -> None:
-        nonlocal batch, batch_chars
-        if not batch:
-            return
-
-        request_data: list[tuple[str, str]] = [
-            ("source_lang", "JA"),
-            ("target_lang", "EN"),
-        ]
-        request_data.extend(("text", text) for text in batch)
-
-        response = requests.post(
-            "https://api-free.deepl.com/v2/translate",
-            data=request_data,
-            headers=headers,
-            timeout=30,
-        )
-        response.raise_for_status()
-        data = response.json()
-        translations = data.get("translations", [])
-
-        if len(translations) != len(batch):
-            raise RuntimeError("DeepL の応答件数が入力件数と一致しません")
-
-        for source_line, translated_item in zip(batch, translations):
-            translated_text = translated_item.get("text", "").strip()
-            translation_cache[source_line] = translated_text or source_line
-
-        batch = []
-        batch_chars = 0
-
-    for line in pending_lines:
-        line_chars = len(line)
-        if batch and (
-            len(batch) >= DEEPL_BATCH_MAX_TEXTS
-            or batch_chars + line_chars > DEEPL_BATCH_MAX_CHARS
-        ):
-            flush_batch()
-        batch.append(line)
-        batch_chars += line_chars
-    flush_batch()
-
-    rendered_blocks: list[str] = []
-    for block_lines in split_srt_blocks(source_text):
-        block = parse_srt_block(block_lines)
-        translated_lines: list[str] = []
-        for line in block.text_lines:
-            stripped = line.strip()
-            if not stripped:
-                translated_lines.append("")
-                continue
-            translated_lines.append(translation_cache.get(stripped, stripped))
-        rendered_blocks.append(render_srt_block(SRTBlock(block.index, block.timecode, translated_lines)))
-
-    return "\n\n".join(rendered_blocks) + ("\n" if rendered_blocks else "")
 
 
 def translate_lines_with_gemini(
@@ -1797,10 +1687,11 @@ def translate_jp_srt(
     en_srt: Path,
     force: bool,
     translation_backend: str,
-    deepl_api_key: str | None,
     gemini_api_key: str | None,
     gemini_model: str,
 ) -> None:
+    if translation_backend not in ("gemini", "argos"):
+        raise RuntimeError(f"Unknown translation backend: {translation_backend}")
     if skip_if_exists(en_srt, force, "en subtitle already exists"):
         return
 
@@ -1811,14 +1702,6 @@ def translate_jp_srt(
 
     if translation_backend == "argos":
         translated = translate_with_argos(source_text)
-    elif translation_backend == "deepl":
-        try:
-            translated = translate_with_deepl(source_text, get_deepl_api_key(deepl_api_key))
-        except Exception as deepl_exc:
-            if not is_deepl_limit_error(deepl_exc):
-                raise
-            print("[翻訳] DeepL limit reached; fallback to Argos")
-            translated = translate_with_argos(source_text)
     elif translation_backend == "gemini":
         gemini_key = get_gemini_api_key(gemini_api_key)
         gemini_models = resolve_gemini_model_candidates(gemini_model, gemini_key)
@@ -1855,17 +1738,8 @@ def translate_jp_srt(
             if gemini_last_exc is not None and not is_gemini_limit_error(gemini_last_exc):
                 raise gemini_last_exc
 
-            print("[翻訳] Gemini limit reached; fallback to DeepL")
-            try:
-                translated = translate_with_deepl(source_text, get_deepl_api_key(deepl_api_key))
-            except Exception as deepl_exc:
-                if not is_deepl_limit_error(deepl_exc):
-                    # DeepL key missing/unavailable or other non-limit failures: fallback to Argos.
-                    print("[翻訳] DeepL unavailable; fallback to Argos")
-                    translated = translate_with_argos(source_text)
-                else:
-                    print("[翻訳] DeepL limit reached; fallback to Argos")
-                    translated = translate_with_argos(source_text)
+            print("[翻訳] Gemini limit reached; fallback to Argos")
+            translated = translate_with_argos(source_text)
     else:
         raise RuntimeError(f"Unknown translation backend: {translation_backend}")
 
@@ -1899,10 +1773,11 @@ def _extract_plain_lines_from_srt(srt_text: str) -> list[str]:
 def translate_plain_lines(
     lines: list[str],
     translation_backend: str,
-    deepl_api_key: str | None,
     gemini_api_key: str | None,
     gemini_model: str,
 ) -> dict[str, str]:
+    if translation_backend not in ("gemini", "argos"):
+        raise RuntimeError(f"Unknown translation backend: {translation_backend}")
     unique_lines: list[str] = []
     seen: set[str] = set()
     for line in lines:
@@ -1919,8 +1794,6 @@ def translate_plain_lines(
 
     if translation_backend == "argos":
         translated_srt = translate_with_argos(source_srt)
-    elif translation_backend == "deepl":
-        translated_srt = translate_with_deepl(source_srt, get_deepl_api_key(deepl_api_key))
     elif translation_backend == "gemini":
         gemini_key = get_gemini_api_key(gemini_api_key)
         gemini_models = resolve_gemini_model_candidates(gemini_model, gemini_key)
@@ -1940,10 +1813,8 @@ def translate_plain_lines(
         if translated_srt is None:
             if gemini_last_exc is not None and not is_gemini_limit_error(gemini_last_exc):
                 raise gemini_last_exc
-            try:
-                translated_srt = translate_with_deepl(source_srt, get_deepl_api_key(deepl_api_key))
-            except Exception:
-                translated_srt = translate_with_argos(source_srt)
+            print("[翻訳] Gemini limit reached; fallback to Argos")
+            translated_srt = translate_with_argos(source_srt)
     else:
         raise RuntimeError(f"Unknown translation backend: {translation_backend}")
 
@@ -1962,7 +1833,6 @@ def overlay_video_text(
     output_video: Path,
     report_json: Path,
     translation_backend: str,
-    deepl_api_key: str | None,
     gemini_api_key: str | None,
     gemini_model: str,
     sample_fps: float,
@@ -1991,7 +1861,6 @@ def overlay_video_text(
     translations = translate_plain_lines(
         source_lines,
         translation_backend,
-        deepl_api_key,
         gemini_api_key,
         gemini_model,
     )

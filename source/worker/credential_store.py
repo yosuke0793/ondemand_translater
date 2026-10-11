@@ -10,7 +10,7 @@ from typing import Protocol
 
 SERVICE_NAME = "TranslateService"
 API_VARIABLES = {
-    "gemini": "GEMINI_API_KEY", "deepl": "DEEPL_API_KEY", "azure": "AZURE_SPEECH_KEY",
+    "gemini": "GEMINI_API_KEY", "azure": "AZURE_SPEECH_KEY",
 }
 
 
@@ -110,7 +110,7 @@ class CredentialStore:
     def worker_credentials(self, provider: str, needs_translation: bool = True) -> dict[str, str]:
         if provider == "argos" or not needs_translation:
             return {}
-        if provider not in ("gemini", "deepl"):
+        if provider != "gemini":
             raise ValueError("対応していない翻訳サービスです。")
         key = self.effective_key(provider)
         if not key:

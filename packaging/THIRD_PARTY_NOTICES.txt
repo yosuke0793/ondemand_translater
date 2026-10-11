@@ -34,6 +34,18 @@ old artifacts built with that binary.
 Draft releases are for review; do not publish until licensing obligations
 and the security/signing checklist in docs/PACKAGING.md have been reviewed.
 
+PyAV and its managed FFmpeg shared libraries
+--------------------------------------------
+PyAV 15.1.0 is built from its hash-pinned PyPI source and is licensed under
+BSD-3-Clause. Its shared FFmpeg 7.1.1 libraries are built from the pinned
+FFmpeg source with a decoding-only, shared LGPL-2.1-or-later configuration.
+GPL, version-3-only, nonfree, x264/x265, encoders, muxers and network protocols
+are disabled for this separate PyAV build. The exact license texts are under
+pyav/. Corresponding sources, recipe, build records and license texts are
+published as TranslateService-<version>-<target>-pyav-source.tar.gz. Keep this
+archive with the package; it is separate from the GPL FFmpeg executable source
+archive above.
+
 Python dependencies
 -------------------
 python-distributions.json identifies installed distribution versions/license

@@ -28,6 +28,10 @@ $Python = Join-Path (Get-Location) "packaging/.venv-build/Scripts/python.exe"
 Invoke-Checked $Python @("-m", "pip", "install", "--only-binary=:all:", "--require-hashes", "-r", "packaging/locks/bootstrap.txt")
 Invoke-Checked $Python @("-m", "pip", "install", "--only-binary=:all:", "--no-binary=sacremoses", "--no-build-isolation", "--require-hashes", "-r", "packaging/locks/windows-x64.txt")
 Invoke-Checked $Python @("-m", "pip", "check")
+Invoke-Checked $Python @("packaging/pyav_source.py", "build-install", "--target", "windows-x64")
+$PyavPrefixBin = Join-Path (Get-Location) "packaging/.work/pyav/windows-x64/prefix/bin"
+$env:PATH = "$PyavPrefixBin;$env:PATH"
+Invoke-Checked $Python @("packaging/pyav_source.py", "verify", "--target", "windows-x64")
 $Arguments = @("packaging/build.py", "build", "--target", "windows-x64")
 if ($ExpectedTag) { $Arguments += @("--expected-tag", $ExpectedTag) }
 Invoke-Checked $Python $Arguments

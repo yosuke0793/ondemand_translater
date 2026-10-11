@@ -13,6 +13,7 @@ VERSION = (ROOT / "packaging" / "VERSION").read_text().strip()
 IS_MAC = os.name != "nt"
 paths = [str(SOURCE), str(WORK / "generated"), str(ROOT / "packaging")]
 resources = [
+    (str(ROOT / "docs"), "docs"),
     (str(SOURCE / "lecture_poc" / "prompts"), "lecture_poc/prompts"),
     (str(WORK / "generated" / "version.json"), "."),
     (str(ROOT / "packaging" / "VERSION"), "."),

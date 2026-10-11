@@ -37,6 +37,39 @@ class MemoryBackend:
 
 
 class CredentialStoreTests(unittest.TestCase):
+    def test_removed_translation_provider_is_not_read_or_dispatched(self) -> None:
+        with patch.object(self.store, "effective_key") as key:
+            with self.assertRaises(ValueError):
+                self.store.worker_credentials("deepl")
+            key.assert_not_called()
+        app = Mock()
+        with self.assertRaises(ValueError):
+            LocalJobManager._default_command(
+                app, {"options": {"translation_backend": "deepl"}}, Path("/job"),
+            )
+
+    def test_usage_terms_window_is_read_only_and_requires_no_browser(self) -> None:
+        app = Mock()
+        with patch("standalone_app.usage_terms_text", return_value="利用上の注意"), \
+                patch("standalone_app.tk.Toplevel"), patch("standalone_app.tk.Text") as text, \
+                patch("standalone_app.ttk.Label"), patch("standalone_app.ttk.Scrollbar"), \
+                patch("standalone_app.ttk.Button"), patch("standalone_app.webbrowser.open") as browser:
+            StandaloneApp.show_usage_terms(app)
+        text.return_value.insert.assert_called_once_with("1.0", "利用上の注意")
+        text.return_value.configure.assert_any_call(state="disabled")
+        browser.assert_not_called()
+
+    def test_usage_terms_missing_document_is_reported_before_opening_window(self) -> None:
+        app = Mock()
+        for error in (FileNotFoundError("missing terms"), ValueError("empty terms")):
+            with self.subTest(error=error), \
+                    patch("standalone_app.usage_terms_text", side_effect=error), \
+                    patch("standalone_app.messagebox.showerror") as notification, \
+                    patch("standalone_app.tk.Toplevel") as window:
+                StandaloneApp.show_usage_terms(app)
+                notification.assert_called_once()
+                window.assert_not_called()
+
     def test_azure_key_and_subscription_headers_are_redacted(self) -> None:
         for value in (
             "AZURE_SPEECH_KEY=sentinel-secret",
@@ -435,6 +468,29 @@ class BundleRuntimeTests(unittest.TestCase):
         ):
             self.assertEqual(app_runtime.worker_command(), ["/explicit/python", "-m", "lecture_poc"])
 
+    def test_usage_terms_resolves_source_and_bundle_without_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            source = root / "source" / "worker"
+            source.mkdir(parents=True)
+            docs = root / "docs"
+            docs.mkdir()
+            document = docs / "TERMS_AND_DISCLAIMER.md"
+            document.write_text("利用上の注意", encoding="utf-8")
+            for bundled, resources in ((False, source), (True, root)):
+                with self.subTest(bundled=bundled), \
+                        patch.object(app_runtime, "is_bundled", return_value=bundled), \
+                        patch.object(app_runtime, "resource_root", return_value=resources):
+                    self.assertEqual(app_runtime.usage_terms_text(), "利用上の注意")
+            with patch.object(app_runtime, "is_bundled", return_value=True), \
+                    patch.object(app_runtime, "resource_root", return_value=root):
+                document.write_text(" \n", encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    app_runtime.usage_terms_text()
+                document.unlink()
+                with self.assertRaises(FileNotFoundError):
+                    app_runtime.usage_terms_text()
+
     def test_bundle_ignores_system_python_and_resolves_adjacent_worker(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
@@ -475,6 +531,8 @@ class BundleRuntimeTests(unittest.TestCase):
     def test_self_test_produces_report_even_without_windowed_stdout(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
+            (root / "docs").mkdir()
+            (root / "docs" / "TERMS_AND_DISCLAIMER.md").write_text("Usage terms", encoding="utf-8")
             prompts = root / "lecture_poc" / "prompts"
             prompts.mkdir(parents=True)
             for name in ("engineering_terms.csv", "whisper_initial_prompt.txt", "jp_clean_ollama.txt"):
@@ -498,6 +556,8 @@ class BundleRuntimeTests(unittest.TestCase):
     def test_bundle_self_test_reports_nonfree_tool_as_error(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
+            (root / "docs").mkdir()
+            (root / "docs" / "TERMS_AND_DISCLAIMER.md").write_text("Usage terms", encoding="utf-8")
             prompts = root / "lecture_poc" / "prompts"
             prompts.mkdir(parents=True)
             for name in ("engineering_terms.csv", "whisper_initial_prompt.txt", "jp_clean_ollama.txt"):

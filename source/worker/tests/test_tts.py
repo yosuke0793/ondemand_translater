@@ -44,6 +44,46 @@ class ScratchTest(unittest.TestCase):
 
 
 class SettingsTests(unittest.TestCase):
+    def test_deepl_api_and_cli_are_removed(self) -> None:
+        parser = build_parser()
+        self.assertNotIn("--deepl-api-key", parser.format_help())
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["--input", "i", "--outdir", "o", "--translation-backend", "deepl"])
+        self.assertFalse(hasattr(pipeline, "translate_with_deepl"))
+        self.assertFalse(hasattr(pipeline.PipelineConfig(Path("i"), Path("o")), "deepl_api_key"))
+        with self.assertRaises(pipeline.PipelineStepError):
+            pipeline.run_pipeline(pipeline.PipelineConfig(
+                Path("i"), Path("o"), translation_backend="deepl",
+            ))
+
+    def test_gemini_limit_falls_back_directly_to_argos(self) -> None:
+        source = "1\n00:00:00,000 --> 00:00:01,000\nこんにちは\n"
+        translated = source.replace("こんにちは", "Hello")
+        with patch.object(pipeline, "get_gemini_api_key", return_value="test-key"), \
+                patch.object(pipeline, "resolve_gemini_model_candidates", return_value=["test-model"]), \
+                patch.object(pipeline, "translate_with_gemini", side_effect=RuntimeError("quota exceeded")), \
+                patch.object(pipeline, "translate_with_argos", return_value=translated) as argos:
+            self.assertEqual(
+                pipeline.translate_plain_lines(["こんにちは"], "gemini", None, "test-model"),
+                {"こんにちは": "Hello"},
+            )
+            argos.assert_called_once()
+            argos.reset_mock()
+            with patch.object(Path, "read_text", return_value=source), \
+                    patch.object(Path, "write_text") as output:
+                pipeline.translate_jp_srt(Path("jp"), Path("en"), True, "gemini", None, "test-model")
+                output.assert_called_once_with(translated, encoding="utf-8")
+                argos.assert_called_once_with(source)
+
+    def test_gemini_nonlimit_failure_does_not_fall_back(self) -> None:
+        with patch.object(pipeline, "get_gemini_api_key", return_value="test-key"), \
+                patch.object(pipeline, "resolve_gemini_model_candidates", return_value=["test-model"]), \
+                patch.object(pipeline, "translate_with_gemini", side_effect=RuntimeError("invalid key")), \
+                patch.object(pipeline, "translate_with_argos") as argos:
+            with self.assertRaisesRegex(RuntimeError, "invalid key"):
+                pipeline.translate_plain_lines(["こんにちは"], "gemini", None, "test-model")
+            argos.assert_not_called()
+
     def test_backend_defaults(self) -> None:
         config = pipeline.PipelineConfig(Path("input"), Path("output"))
         self.assertEqual(config.tts_backend, "piper")

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import re
+import shlex
 import subprocess
 import tarfile
 from pathlib import Path, PurePosixPath
@@ -15,6 +17,13 @@ from piper_source import application_source_files
 from piper_model import model_metadata
 
 TARGETS = ("windows-x64", "macos-arm64", "macos-x64")
+
+
+def _sha256_stream(stream) -> str:
+    digest = hashlib.sha256()
+    for block in iter(lambda: stream.read(1024 * 1024), b""):
+        digest.update(block)
+    return digest.hexdigest()
 
 
 def verify_piper_source_archive(path: Path, info: dict) -> None:
@@ -103,7 +112,7 @@ def verify_piper_source_archive(path: Path, info: dict) -> None:
             if stream is None:
                 raise ValueError(f"Unreadable Piper source: {source['name']}")
             with stream:
-                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                digest = _sha256_stream(stream)
             if digest != source["sha256"]:
                 raise ValueError(f"Piper corresponding source hash mismatch: {source['name']}")
 
@@ -153,7 +162,7 @@ def verify_source_archive(path: Path, target: str, value: str, media: dict) -> N
             if stream is None:
                 raise ValueError(f"Unreadable corresponding source: {source['name']}")
             with stream:
-                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                digest = _sha256_stream(stream)
             if digest != source["sha256"]:
                 raise ValueError(f"Corresponding source hash mismatch: {source['name']}")
         info = json.loads(read("build-info.json"))
@@ -174,6 +183,139 @@ def verify_source_archive(path: Path, target: str, value: str, media: dict) -> N
                 raise ValueError(f"Missing corresponding-source build log: {name}")
 
 
+def verify_pyav_source_archive(path: Path, target: str, value: str, info: dict) -> None:
+    manifest_bytes = (PACKAGING / "pyav.json").read_bytes()
+    manifest = json.loads(manifest_bytes)
+    pyav, ffmpeg, recipe = manifest["pyav"], manifest["ffmpeg"], manifest["recipe"]
+    expected_sources = [
+        {key: pyav[key] for key in ("name", "url", "sha256", "license")},
+        {key: ffmpeg[key] for key in ("name", "url", "sha256", "license")},
+    ]
+    if (
+        (manifest.get("schema_version"), pyav.get("version"), pyav.get("license"),
+         ffmpeg.get("version"), ffmpeg.get("license"), recipe.get("license"),
+         recipe.get("nonfree"))
+        != (1, "15.1.0", "BSD-3-Clause", "7.1.1", "LGPL-2.1-or-later",
+            "LGPL-2.1-or-later", False)
+    ):
+        raise ValueError("Managed PyAV/FFmpeg license manifest mismatch")
+    if info.get("manifest_sha256") != hashlib.sha256(manifest_bytes).hexdigest():
+        raise ValueError("Managed PyAV source manifest hash mismatch")
+    if info.get("sources") != expected_sources:
+        raise ValueError("Managed PyAV source records do not match pinned source manifest")
+    with tarfile.open(path, "r:gz") as archive:
+        members = {}
+        for member in archive:
+            name = PurePosixPath(member.name)
+            if (not member.isfile() or name.is_absolute() or ".." in name.parts
+                    or member.name in members):
+                raise ValueError(f"Unsafe/duplicate managed PyAV source member: {member.name}")
+            members[member.name] = member
+
+        def read(name: str, limit: int = 1024 * 1024) -> bytes:
+            member = members.get(name)
+            if member is None or member.size > limit:
+                raise ValueError(f"Missing/oversized managed PyAV source record: {name}")
+            stream = archive.extractfile(member)
+            if stream is None:
+                raise ValueError(f"Unreadable managed PyAV source record: {name}")
+            with stream:
+                return stream.read(limit + 1)
+
+        for name in ("pyav.json", "pyav_source.py", "build-pyav-ffmpeg.sh"):
+            if read(name) != (PACKAGING / name).read_bytes():
+                raise ValueError(f"Managed PyAV recipe/manifest mismatch: {name}")
+        expected_names = {f"sources/{source['name']}" for source in expected_sources}
+        for source in expected_sources:
+            source_name = f"sources/{source['name']}"
+            member = members.get(source_name)
+            if member is None:
+                raise ValueError(f"Missing managed corresponding source: {source['name']}")
+            stream = archive.extractfile(member)
+            if stream is None:
+                raise ValueError(f"Unreadable managed corresponding source: {source['name']}")
+            with stream:
+                if _sha256_stream(stream) != source["sha256"]:
+                    raise ValueError(f"Managed corresponding source hash mismatch: {source['name']}")
+        record_bytes = read("build-info.json")
+        build_record = json.loads(record_bytes)
+        for key, expected in (
+            ("schema_version", 1), ("target", target), ("app_version", value),
+            ("pyav_version", "15.1.0"), ("pyav_license", "BSD-3-Clause"),
+            ("ffmpeg_version", "7.1.1"), ("ffmpeg_license", "LGPL-2.1-or-later"),
+            ("nonfree", False), ("manifest_sha256", info["manifest_sha256"]),
+            ("sources", expected_sources), ("source_archive", path.name),
+            ("configure_args", info.get("configure_args")),
+            ("shared_library_sha256", info.get("shared_library_sha256")),
+            ("pyav_wheel_sha256", info.get("pyav_wheel_sha256")),
+        ):
+            if build_record.get(key) != expected:
+                raise ValueError(f"Managed PyAV source build record mismatch: {key}")
+        configure = read("build/ffmpeg-configure-args.txt").decode("utf-8")
+        if configure != build_record.get("configure_args"):
+            raise ValueError("Managed PyAV FFmpeg configure log mismatch")
+        args = shlex.split(configure)
+        if any(arg in args for arg in (
+            "--enable-gpl", "--enable-nonfree", "--enable-version3",
+            "--enable-libx264", "--enable-libx265",
+        )):
+            raise ValueError("Managed PyAV FFmpeg configure log enables GPL/nonfree components")
+        if "--enable-shared" not in args or "--disable-static" not in args:
+            raise ValueError("Managed PyAV FFmpeg must use shared libraries only")
+        for required in recipe["configure_args"]:
+            if required not in args:
+                raise ValueError(f"Managed PyAV FFmpeg configure log missing {required}")
+        libraries = build_record.get("shared_library_sha256", {})
+        required_libraries = recipe["required_libraries"]
+        if any(not any(name in filename.lower() for filename in libraries)
+               for name in required_libraries):
+            raise ValueError("Managed PyAV build record omits a required shared FFmpeg library")
+        if any(not re.fullmatch(r"[0-9a-f]{64}", digest) for digest in libraries.values()):
+            raise ValueError("Managed PyAV shared-library hash record is malformed")
+        if not re.fullmatch(r"[0-9a-f]{64}", build_record.get("pyav_wheel_sha256", "")):
+            raise ValueError("Managed PyAV wheel hash record is malformed")
+        for name, expected_member in (
+            ("notices/PyAV-LICENSE.txt", ("sources/av-15.1.0.tar.gz", "av-15.1.0/LICENSE.txt")),
+            ("notices/FFmpeg-COPYING.LGPLv2.1.txt",
+             ("sources/ffmpeg-7.1.1.tar.xz", "ffmpeg-7.1.1/COPYING.LGPLv2.1")),
+        ):
+            source_stream = archive.extractfile(members[expected_member[0]])
+            if source_stream is None:
+                raise ValueError(f"Missing source for managed PyAV notice: {expected_member[0]}")
+            with source_stream:
+                with tarfile.open(fileobj=io.BytesIO(source_stream.read()), mode="r:*") as source_archive:
+                    expected_license = source_archive.extractfile(expected_member[1])
+                    if expected_license is None or read(name) != expected_license.read():
+                        raise ValueError(f"Managed PyAV license notice mismatch: {name}")
+        if read("notices/managed-source-manifest.json") != manifest_bytes:
+            raise ValueError("Managed PyAV notice manifest mismatch")
+        expected_names.update({
+            "build-info.json", "build/ffmpeg-configure-args.txt", "build/build.log",
+            "build/ffmpeg-configure.log", "build/ffmpeg-build.log", "build/pyav-build.log",
+            "notices/PyAV-LICENSE.txt", "notices/FFmpeg-COPYING.LGPLv2.1.txt",
+            "notices/managed-source-manifest.json",
+        })
+        if set(members) != expected_names | {
+            "pyav.json", "pyav_source.py", "build-pyav-ffmpeg.sh",
+        }:
+            raise ValueError(f"Unexpected/missing managed PyAV source archive contents: {target}")
+        for name in ("build/build.log", "build/ffmpeg-configure-args.txt",
+                     "build/ffmpeg-configure.log", "build/ffmpeg-build.log", "build/pyav-build.log"):
+            if name not in members or members[name].size == 0:
+                raise ValueError(f"Missing managed PyAV build record: {name}")
+    smoke = info.get("decode_smoke", {})
+    if (
+        smoke.get("pyav_version") != "15.1.0"
+        or smoke.get("decoded") != {"codec": "h264", "width": 160, "height": 120}
+        or smoke.get("frozen_decode") != {
+            "pyav_version": "15.1.0", "decoded": {"codec": "h264", "width": 160, "height": 120},
+        }
+        or any(f"lib{name}" not in smoke.get("ffmpeg_library_versions", {})
+               for name in recipe["required_libraries"])
+    ):
+        raise ValueError("Missing successful managed PyAV/FFmpeg decode smoke test")
+
+
 def validate_assets(tag: str) -> list[Path]:
     value = version(tag)
     expected = set()
@@ -183,6 +325,7 @@ def validate_assets(tag: str) -> list[Path]:
         names = {f"{prefix}-build-info.json"}
         names.add(f"{prefix}-ffmpeg-source.tar.gz")
         names.add(f"{prefix}-piper-source.tar.gz")
+        names.add(f"{prefix}-pyav-source.tar.gz")
         names.update({f"{prefix}-setup.exe", f"{prefix}-portable.zip"}
                      if target == "windows-x64" else {f"{prefix}.dmg"})
         checksum = ARTIFACTS / f"{prefix}-SHA256SUMS.txt"
@@ -217,6 +360,24 @@ def validate_assets(tag: str) -> list[Path]:
         if sha256(ARTIFACTS / piper_source_name) != piper.get("source_sha256"):
             raise ValueError(f"Piper corresponding-source hash mismatch: {target}")
         verify_piper_source_archive(ARTIFACTS / piper_source_name, piper)
+        pyav = info.get("pyav", {})
+        pyav_source_name = f"{prefix}-pyav-source.tar.gz"
+        if (
+            pyav.get("source_archive"), pyav.get("pyav_version"), pyav.get("pyav_license"),
+            pyav.get("ffmpeg_version"), pyav.get("ffmpeg_license"), pyav.get("nonfree"),
+        ) != (pyav_source_name, "15.1.0", "BSD-3-Clause", "7.1.1", "LGPL-2.1-or-later", False):
+            raise ValueError(f"Missing managed PyAV/FFmpeg license confirmation: {target}")
+        if sha256(ARTIFACTS / pyav_source_name) != pyav.get("source_archive_sha256"):
+            raise ValueError(f"Managed PyAV corresponding-source hash mismatch: {target}")
+        verify_pyav_source_archive(ARTIFACTS / pyav_source_name, target, value, pyav)
+        provenance = info.get("source_provenance", {})
+        expected_revision = (
+            f"source-manifest-sha256:{provenance.get('value')}"
+            if provenance.get("kind") == "source-manifest-sha256"
+            else provenance.get("value")
+        )
+        if not info.get("commit") or expected_revision != info.get("commit"):
+            raise ValueError(f"Missing explicit source build provenance: {target}")
         commits.add(info["commit"])
         roles = {report["role"] for report in info["self_tests"]
                  if report["status"] == "ok" and report["version"] == value}

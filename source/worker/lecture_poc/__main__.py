@@ -129,14 +129,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--translation-backend",
-        choices=("argos", "deepl", "gemini"),
+        choices=("argos", "gemini"),
         default="gemini",
-        help="翻訳バックエンド: argos/deepl/gemini",
-    )
-    parser.add_argument(
-        "--deepl-api-key",
-        default=None,
-        help="DeepL APIキー（未指定時は環境変数 DEEPL_API_KEY を使用）",
+        help="翻訳バックエンド: argos/gemini",
     )
     parser.add_argument(
         "--gemini-api-key",
@@ -210,12 +205,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def ensure_python_dependencies(translation_backend: str, video_text_overlay: bool, tts_backend: str) -> None:
+    if translation_backend not in {"gemini", "argos"}:
+        raise ValueError("Translation backend must be gemini or argos.")
     if tts_backend not in {"piper", "azure"}:
         raise ModuleNotFoundError("TTS backend must be piper or azure.")
     required_modules = ["faster_whisper", "piper" if tts_backend == "piper" else "requests"]
     if translation_backend == "argos":
         required_modules.append("argostranslate")
-    elif translation_backend in {"deepl", "gemini"}:
+    elif translation_backend == "gemini":
         required_modules.append("requests")
 
     if video_text_overlay:
@@ -282,7 +279,6 @@ def main(argv: list[str] | None = None) -> int:
         jp_clean_mode=args.jp_clean_mode,
         ollama_model=args.ollama_model,
         translation_backend=args.translation_backend,
-        deepl_api_key=args.deepl_api_key,
         gemini_api_key=args.gemini_api_key,
         gemini_model=args.gemini_model,
         burn_subs=args.burn_subs,

@@ -300,6 +300,11 @@ ctranslate2==4.6.0 \
     #   -r packaging/requirements.in
     #   argostranslate
     #   faster-whisper
+cython==3.1.4 \
+    --hash=sha256:0d26af46505d0e54fe0f05e7ad089fd0eed8fa04f385f3ab88796f554467bcb9
+    # via
+    #   -c packaging/locks/macos-x64.txt
+    #   -r packaging/requirements.in
 faster-whisper==1.1.1 \
     --hash=sha256:50d27571970c1be0c2b2680a2593d5d12f9f5d2f10484f242a1afbe7cb946604 \
     --hash=sha256:5808dc334fb64fb4336921450abccfe5e313a859b31ba61def0ac7f639383d90

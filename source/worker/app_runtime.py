@@ -21,6 +21,15 @@ def resource_root() -> Path:
     return Path(__file__).resolve().parent
 
 
+def usage_terms_text() -> str:
+    root = resource_root()
+    document = (root if is_bundled() else root.parents[1]) / "docs" / "TERMS_AND_DISCLAIMER.md"
+    text = document.read_text(encoding="utf-8")
+    if not text.strip():
+        raise ValueError("利用上の注意文書が空です。配布元から完全な版を再取得してください。")
+    return text
+
+
 def app_version() -> str:
     version_file = resource_root() / "VERSION"
     if not version_file.is_file():
@@ -119,6 +128,7 @@ def bundle_self_test(role: str, report_path: Path | None = None) -> int:
                 raise FileNotFoundError(f"Missing bundled resource: {name}")
         if role == "gui":
             importlib.import_module("tkinter")
+            usage_terms_text()
             worker_command()
             from credential_store import secure_backend
 

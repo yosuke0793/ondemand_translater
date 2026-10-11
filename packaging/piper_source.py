@@ -28,6 +28,7 @@ def application_source_files(root: Path = ROOT) -> dict[str, Path]:
         "requirements.in",
         "bootstrap.in",
         "ffmpeg.json",
+        "pyav.json",
         "piper_model.json",
         "piper_model_license.txt",
         "john_model_license.txt",
@@ -38,6 +39,8 @@ def application_source_files(root: Path = ROOT) -> dict[str, Path]:
         "installer.iss",
         "build-ffmpeg.sh",
         "ffmpeg_source.py",
+        "pyav_source.py",
+        "build-pyav-ffmpeg.sh",
         "piper_model.py",
         "piper_source.py",
         "rebuild_piper_offline.py",
@@ -47,7 +50,8 @@ def application_source_files(root: Path = ROOT) -> dict[str, Path]:
         "locks/macos-x64.txt",
         "locks/windows-x64.txt",
     )
-    paths = [root / "LICENSE"]
+    paths = [root / "LICENSE", root / "README.md"]
+    paths.extend(sorted((root / "docs").glob("*.md")))
     paths.extend(sorted((root / "source" / "worker").glob("*.py")))
     paths.extend(sorted((root / "source" / "worker" / "lecture_poc").rglob("*.py")))
     paths.extend(sorted(

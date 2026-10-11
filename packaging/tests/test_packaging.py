@@ -25,11 +25,106 @@ sys.path.insert(0, str(PACKAGING))
 import build
 import piper_model
 import piper_source
+import pyav_source
 import release
 import app_runtime
 
 
 class PackagingTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("bash"), "Bash required")
+    def test_managed_ffmpeg_allows_mingw_import_libraries_but_not_static_archives(self):
+        directory = PACKAGING / ".work" / "unit-pyav-import-libraries"
+        shutil.rmtree(directory, ignore_errors=True)
+        library_dir = directory / "lib"
+        library_dir.mkdir(parents=True)
+        recipe = (PACKAGING / "build-pyav-ffmpeg.sh").read_text()
+        gate = recipe[recipe.index('if find "$PREFIX/lib"'):]
+        try:
+            for name in ("libavcodec.dll.a", "libswscale.dll.a"):
+                (library_dir / name).touch()
+            env = dict(os.environ, PREFIX=str(directory))
+            subprocess.run(["bash", "-c", gate], env=env, check=True, capture_output=True)
+            for name in ("libavcodec.a", "libswscale.a"):
+                with self.subTest(name=name):
+                    static = library_dir / name
+                    static.touch()
+                    result = subprocess.run(["bash", "-c", gate], env=env, capture_output=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(b"Static FFmpeg", result.stderr)
+                    static.unlink()
+        finally:
+            shutil.rmtree(directory)
+
+    def test_pyav_compiler_options_precede_wheel_build(self):
+        from setuptools import Distribution
+
+        command = pyav_source._wheel_command("windows-x64", Path("prefix"), Path("wheels"))
+        self.assertLess(command.index("build_ext"), command.index("bdist_wheel"))
+        self.assertLess(command.index("--compiler=mingw32"), command.index("bdist_wheel"))
+        source_arguments = command[2:]
+        ffmpeg_argument = next(arg for arg in source_arguments if arg.startswith("--ffmpeg-dir="))
+        source_arguments.remove(ffmpeg_argument)  # Verified PyAV 15.1.0 setup.py behavior.
+        distribution = Distribution({"script_args": source_arguments})
+        self.assertTrue(distribution.parse_command_line())
+        self.assertEqual(distribution.commands, ["build_ext", "bdist_wheel"])
+        self.assertEqual(distribution.get_command_obj("build_ext").compiler, "mingw32")
+
+    def test_windows_pyav_compiler_probe_fails_on_extension_load_failure(self):
+        directory = PACKAGING / ".work" / "unit-pyav-compiler-probe"
+        shutil.rmtree(directory, ignore_errors=True)
+        results = [
+            subprocess.CompletedProcess([], 0, stdout="x86_64-w64-mingw32\n"),
+            subprocess.CompletedProcess([], 0),
+            subprocess.CalledProcessError(1, ["python", "-c"], stderr="DLL load failed"),
+        ]
+        try:
+            with patch.object(pyav_source, "_checked", side_effect=results):
+                with self.assertRaisesRegex(RuntimeError, "cannot compile/link/load"):
+                    pyav_source._verify_windows_compiler(directory, {})
+        finally:
+            shutil.rmtree(directory)
+
+    def test_frozen_pyav_gate_hides_source_libraries_and_restores_after_failure(self):
+        directory = PACKAGING / ".work" / "unit-pyav-frozen-gate"
+        shutil.rmtree(directory, ignore_errors=True)
+        bundle = directory / "bundle"
+        (bundle / "av").mkdir(parents=True)
+        (bundle / "av" / "_core.so").touch()
+        for library in pyav_source.FFMPEG_LIBRARIES:
+            (bundle / f"lib{library}.dylib").touch()
+        notices = directory / "notices" / "pyav"
+        notices.mkdir(parents=True)
+        for name in ("PyAV-LICENSE.txt", "FFmpeg-COPYING.LGPLv2.1.txt", "managed-source-manifest.json"):
+            (notices / name).touch()
+        source_libdir = directory / "pyav" / "macos-arm64" / "prefix" / "lib"
+        source_libdir.mkdir(parents=True)
+        test_dir = directory / "smoke"
+        test_dir.mkdir()
+        decoded = {"pyav_version": "15.1.0",
+                   "decoded": {"codec": "h264", "width": 160, "height": 120}}
+
+        def run(command, **kwargs):
+            if "--pyav-decode-self-test" in command:
+                self.assertFalse(source_libdir.exists())
+                self.assertNotIn("DYLD_LIBRARY_PATH", kwargs["env"])
+                raise subprocess.CalledProcessError(1, command)
+            Path(command[-1]).touch()
+
+        try:
+            with patch.object(build, "WORK", directory), \
+                 patch.object(build, "run", side_effect=run), \
+                 patch.object(build, "executable_dir", return_value=bundle), \
+                 patch.object(pyav_source, "verify_installed", return_value={"pyav_version": "15.1.0"}), \
+                 patch.object(pyav_source, "decode_smoke", return_value=decoded):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    build.verify_managed_pyav(
+                        bundle, "macos-arm64", test_dir, {"DYLD_LIBRARY_PATH": str(source_libdir)},
+                    )
+            self.assertTrue(source_libdir.is_dir())
+            self.assertFalse((test_dir / "pyav-managed-decode-smoke.mp4").exists())
+        finally:
+            shutil.rmtree(directory)
+
     @unittest.skipUnless(shutil.which("bash") and shutil.which("make"), "Bash and make required")
     def test_native_program_targets_use_windows_executable_suffix_only_on_windows(self):
         recipe = (PACKAGING / "build-ffmpeg.sh").read_text()
@@ -196,7 +291,93 @@ cmake() {
         piper["runtime"]["source_archive_sha256"] = synthetic_hash
         piper["runtime"]["embedded_espeak_ng"]["source_archive_sha256"] = synthetic_hash
         (inputs / "piper_model.json").write_text(json.dumps(piper))
+        pyav = json.loads((PACKAGING / "pyav.json").read_text())
+        pyav_license = b"synthetic PyAV BSD license"
+        ffmpeg_license = b"synthetic FFmpeg LGPL license"
+        pyav_archive = io.BytesIO()
+        with tarfile.open(fileobj=pyav_archive, mode="w:gz") as archive:
+            for name, content in (("av-15.1.0/LICENSE.txt", pyav_license),):
+                member = tarfile.TarInfo(name)
+                member.size = len(content)
+                archive.addfile(member, io.BytesIO(content))
+        ffmpeg_archive = io.BytesIO()
+        with tarfile.open(fileobj=ffmpeg_archive, mode="w:xz") as archive:
+            member = tarfile.TarInfo("ffmpeg-7.1.1/COPYING.LGPLv2.1")
+            member.size = len(ffmpeg_license)
+            archive.addfile(member, io.BytesIO(ffmpeg_license))
+        pyav["pyav"]["sha256"] = hashlib.sha256(pyav_archive.getvalue()).hexdigest()
+        pyav["ffmpeg"]["sha256"] = hashlib.sha256(ffmpeg_archive.getvalue()).hexdigest()
+        (inputs / "pyav.json").write_text(json.dumps(pyav))
+        for name in ("pyav_source.py", "build-pyav-ffmpeg.sh"):
+            shutil.copy2(PACKAGING / name, inputs / name)
+        (inputs / ".pyav_sources.json").write_text(json.dumps({
+            "pyav": pyav_archive.getvalue().hex(),
+            "ffmpeg": ffmpeg_archive.getvalue().hex(),
+            "pyav_license": pyav_license.decode(),
+            "ffmpeg_license": ffmpeg_license.decode(),
+        }))
         return inputs
+
+    def make_pyav_source_archive(self, directory, inputs, target, value):
+        manifest_bytes = (inputs / "pyav.json").read_bytes()
+        manifest = json.loads(manifest_bytes)
+        source_data = json.loads((inputs / ".pyav_sources.json").read_text())
+        sources = [
+            {key: manifest[kind][key] for key in ("name", "url", "sha256", "license")}
+            for kind in ("pyav", "ffmpeg")
+        ]
+        configure = " ".join(manifest["recipe"]["configure_args"] + ["--arch=x86_64"])
+        library_hashes = {
+            f"lib{library}.dylib": hashlib.sha256(library.encode()).hexdigest()
+            for library in manifest["recipe"]["required_libraries"]
+        }
+        source_name = f"TranslateService-{value}-{target}-pyav-source.tar.gz"
+        record = {
+            "schema_version": 1, "target": target, "app_version": value,
+            "pyav_version": "15.1.0", "pyav_license": "BSD-3-Clause",
+            "ffmpeg_version": "7.1.1", "ffmpeg_license": "LGPL-2.1-or-later",
+            "nonfree": False, "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+            "sources": sources, "configure_args": configure,
+            "shared_library_sha256": library_hashes,
+            "pyav_wheel_sha256": "a" * 64, "wheel": "av-15.1.0-cp312-test.whl",
+            "source_archive": source_name,
+        }
+        contents = {name: (inputs / name).read_bytes()
+                    for name in ("pyav.json", "pyav_source.py", "build-pyav-ffmpeg.sh")}
+        contents.update({
+            "build-info.json": json.dumps(record).encode(),
+            "build/ffmpeg-configure-args.txt": configure.encode(),
+            "build/build.log": b"synthetic managed FFmpeg build log",
+            "build/ffmpeg-configure.log": b"synthetic managed FFmpeg configure log",
+            "build/ffmpeg-build.log": b"synthetic managed FFmpeg make log",
+            "build/pyav-build.log": b"synthetic PyAV wheel compile log",
+            "sources/av-15.1.0.tar.gz": bytes.fromhex(source_data["pyav"]),
+            "sources/ffmpeg-7.1.1.tar.xz": bytes.fromhex(source_data["ffmpeg"]),
+            "notices/PyAV-LICENSE.txt": source_data["pyav_license"].encode(),
+            "notices/FFmpeg-COPYING.LGPLv2.1.txt": source_data["ffmpeg_license"].encode(),
+            "notices/managed-source-manifest.json": manifest_bytes,
+        })
+        path = directory / source_name
+        with tarfile.open(path, "w:gz") as archive:
+            for name, data in contents.items():
+                member = tarfile.TarInfo(name)
+                member.size = len(data)
+                archive.addfile(member, io.BytesIO(data))
+        info = {
+            **record, "source_archive_sha256": build.sha256(path),
+            "decode_smoke": {
+                "pyav_version": "15.1.0",
+                "ffmpeg_library_versions": {
+                    f"lib{name}": [1, 0, 0] for name in manifest["recipe"]["required_libraries"]
+                },
+                "decoded": {"codec": "h264", "width": 160, "height": 120},
+                "frozen_decode": {
+                    "pyav_version": "15.1.0",
+                    "decoded": {"codec": "h264", "width": 160, "height": 120},
+                },
+            },
+        }
+        return path, info
 
     def make_piper_archive(self, directory, inputs, target, value, changes=None):
         manifest_bytes = (inputs / "piper_model.json").read_bytes()
@@ -301,9 +482,16 @@ cmake() {
             destination.mkdir(parents=True)
             (destination / "COPYING").write_text("GNU GENERAL PUBLIC LICENSE Version 3")
 
+        def copy_pyav_notices(destination):
+            destination.mkdir(parents=True)
+            (destination / "PyAV-LICENSE.txt").write_text("PyAV BSD license")
+            (destination / "FFmpeg-COPYING.LGPLv2.1.txt").write_text("FFmpeg LGPL license")
+            (destination / "managed-source-manifest.json").write_text("{}")
+
         try:
             with patch.object(build, "WORK", directory), \
                  patch.object(build, "copy_piper_notices", side_effect=copy_notices), \
+                 patch.object(pyav_source, "copy_notices", side_effect=copy_pyav_notices), \
                  patch.object(build.importlib.metadata, "distributions", return_value=[]):
                 build.generate_metadata("windows-x64")
             notices = directory / "notices"
@@ -491,8 +679,9 @@ cmake() {
                 self.assertNotIn("/.venv/", source)
                 self.assertIn(destination, {
                     ".", "lecture_poc/prompts", "third-party-notices", "faster_whisper/assets",
-                    "piper-model", "piper/espeak-ng-data/voices",
+                    "piper-model", "piper/espeak-ng-data/voices", "docs",
                 })
+            self.assertIn((str(PACKAGING.parent / "docs"), "docs"), kwargs["datas"])
             self.assertTrue(any(destination == "lecture_poc/prompts"
                                 for _, destination in kwargs["datas"]))
         self.assertFalse(calls["EXE"][0][1]["console"])
@@ -679,7 +868,8 @@ cmake() {
                  patch.object(build, "WORK", root / "work"), \
                  patch.object(build, "run", side_effect=run) as command, \
                  patch.object(build, "validate_ffmpeg_license"), \
-                 patch.object(build, "verify_media_tools"):
+                 patch.object(build, "verify_media_tools"), \
+                 patch.object(build, "verify_managed_pyav"):
                 self.assertEqual(len(build.verify_bundle(root, "macos-x64")), 2)
                 male_asset = directory / "en_US-john-medium.onnx"
                 male_asset.unlink()
@@ -733,7 +923,12 @@ cmake() {
                         inventoried[relative],
                     )
                 self.assertIn("piper-source/application/LICENSE", names)
+                self.assertIn("piper-source/application/README.md", names)
+                self.assertIn("piper-source/application/docs/PACKAGING.md", names)
                 self.assertIn("piper-source/application/packaging/john_model_license.txt", names)
+                self.assertIn("piper-source/application/packaging/pyav.json", names)
+                self.assertIn("piper-source/application/packaging/pyav_source.py", names)
+                self.assertIn("piper-source/application/packaging/build-pyav-ffmpeg.sh", names)
                 self.assertIn("piper-source/rebuild_piper_offline.py", names)
                 self.assertNotIn("piper-source/application/source/worker/data/jobs.db", names)
                 self.assertNotIn("piper-source/application/source/worker/tests/test_tts.py", names)
@@ -885,6 +1080,76 @@ cmake() {
         self.assertTrue(any(name.startswith("ffmpeg-") for name in names))
         self.assertTrue(any(name.startswith("x264-") for name in names))
 
+    def test_managed_pyav_sources_are_pinned_shared_lgpl_and_installed_before_freezing(self):
+        manifest = pyav_source._manifest()
+        self.assertEqual(manifest["pyav"]["version"], "15.1.0")
+        self.assertEqual(
+            manifest["pyav"]["sha256"],
+            "39cda2dc810e11c1938f8cb5759c41d6b630550236b3365790e67a313660ec85",
+        )
+        self.assertEqual(manifest["pyav"]["license"], "BSD-3-Clause")
+        self.assertEqual(manifest["ffmpeg"]["version"], "7.1.1")
+        self.assertEqual(manifest["ffmpeg"]["license"], "LGPL-2.1-or-later")
+        self.assertEqual(manifest["recipe"]["license"], "LGPL-2.1-or-later")
+        self.assertIs(manifest["recipe"]["nonfree"], False)
+        configure = manifest["recipe"]["configure_args"]
+        for flag in (
+            "--disable-gpl", "--disable-nonfree", "--disable-version3",
+            "--disable-encoders", "--disable-muxers", "--disable-network",
+            "--disable-static", "--enable-shared",
+        ):
+            self.assertIn(flag, configure)
+        for flag in ("--enable-gpl", "--enable-nonfree", "--enable-version3",
+                     "--enable-libx264", "--enable-libx265"):
+            self.assertNotIn(flag, configure)
+        standalone_recipe = (PACKAGING / "build-ffmpeg.sh").read_text()
+        self.assertIn("--enable-gpl --enable-version3 --enable-libx264", standalone_recipe)
+        for wrapper in ("build-macos.sh", "build-windows.ps1"):
+            text = (PACKAGING / wrapper).read_text()
+            self.assertLess(text.index("pyav_source.py"), text.index("build.py"))
+            self.assertIn("build-install", text)
+            self.assertIn("verify", text)
+        for target, digest in (
+            ("macos-arm64", "66ac8bb5068156c92359e3f0eefa138c177d59d1a2e8a89467881fa7d06aba3b"),
+            ("macos-x64", "0d26af46505d0e54fe0f05e7ad089fd0eed8fa04f385f3ab88796f554467bcb9"),
+            ("windows-x64", "f262b32327b6bce340cce5d45bbfe3972cb62543a4930460d8564a489f3aea12"),
+        ):
+            text = (PACKAGING / "locks" / f"{target}.txt").read_text()
+            self.assertRegex(text, rf"(?m)^cython==3\.1\.4 \\\n +--hash=sha256:{digest}$")
+
+    def test_source_hygiene_and_gitless_manifest_provenance(self):
+        empty = subprocess.CompletedProcess([], 0, stdout=b"")
+        with patch.object(build, "subprocess") as subprocess_mock:
+            subprocess_mock.run.return_value = empty
+            build.verify_source_hygiene()
+            subprocess_mock.run.assert_called_once()
+            subprocess_mock.run.return_value = subprocess.CompletedProcess(
+                [], 0, stdout=b"source/worker/data/jobs.db\0"
+            )
+            with self.assertRaisesRegex(RuntimeError, "Tracked user/runtime data"):
+                build.verify_source_hygiene()
+
+        directory = PACKAGING / ".work" / "unit-gitless-provenance"
+        shutil.rmtree(directory, ignore_errors=True)
+        root = directory / "application"
+        root.mkdir(parents=True)
+        source_file = root / "README.md"
+        source_file.write_text("archived source tree", encoding="utf-8")
+        source_manifest = directory / "source-manifest.json"
+        source_manifest.write_text(json.dumps({
+            "application_files": {"README.md": build.sha256(source_file)},
+        }), encoding="utf-8")
+        try:
+            with patch.object(build, "ROOT", root), \
+                 patch.object(build, "WORK", directory / "work"), \
+                 patch.object(build, "application_source_files", return_value={"README.md": source_file}), \
+                 patch.dict(os.environ, {"TRANSLATESERVICE_SOURCE_REVISION": ""}):
+                revision, provenance = build.source_provenance()
+            self.assertEqual(provenance["kind"], "source-manifest-sha256")
+            self.assertEqual(revision, f"source-manifest-sha256:{provenance['value']}")
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+
     def test_source_archive_rejects_wrong_sources_recipe_records_and_unsafe_paths(self):
         directory = PACKAGING / ".work" / "unit-source-archive"
         shutil.rmtree(directory, ignore_errors=True)
@@ -915,6 +1180,40 @@ cmake() {
         finally:
             shutil.rmtree(directory)
 
+    def test_managed_pyav_source_archive_rejects_tampered_corresponding_sources(self):
+        directory = PACKAGING / ".work" / "unit-pyav-source-gate"
+        shutil.rmtree(directory, ignore_errors=True)
+        directory.mkdir(parents=True)
+        try:
+            inputs = self.make_source_inputs(directory)
+            path, info = self.make_pyav_source_archive(
+                directory, inputs, "macos-arm64", build.version(),
+            )
+            with patch.object(release, "PACKAGING", inputs):
+                release.verify_pyav_source_archive(path, "macos-arm64", build.version(), info)
+                incomplete_smoke = {**info["decode_smoke"]}
+                incomplete_smoke.pop("frozen_decode")
+                with self.assertRaisesRegex(ValueError, "decode"):
+                    release.verify_pyav_source_archive(
+                        path, "macos-arm64", build.version(),
+                        {**info, "decode_smoke": incomplete_smoke},
+                    )
+                with tarfile.open(path, "r:gz") as archive:
+                    contents = {
+                        member.name: archive.extractfile(member).read()
+                        for member in archive.getmembers()
+                    }
+                contents["sources/av-15.1.0.tar.gz"] += b"tampered"
+                with tarfile.open(path, "w:gz") as archive:
+                    for name, data in contents.items():
+                        member = tarfile.TarInfo(name)
+                        member.size = len(data)
+                        archive.addfile(member, io.BytesIO(data))
+                with self.assertRaisesRegex(ValueError, "source hash mismatch"):
+                    release.verify_pyav_source_archive(path, "macos-arm64", build.version(), info)
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+
     def test_hash_locked_native_dependencies(self):
         for target in release.TARGETS:
             text = (PACKAGING / "locks" / f"{target}.txt").read_text()
@@ -926,6 +1225,7 @@ cmake() {
             self.assertIn("torch==2.2.2", text)
             self.assertIn("pyinstaller==6.16.0", text)
             self.assertIn("keyring==25.6.0", text)
+            self.assertIn("cython==3.1.4", text)
         bootstrap = (PACKAGING / "locks" / "bootstrap.txt").read_text()
         for name in ("pip", "setuptools", "wheel"):
             self.assertRegex(bootstrap, rf"(?m)^{name}==[^\s]+ \\\n +--hash=sha256:")
@@ -944,9 +1244,11 @@ cmake() {
                     (directory / f"{prefix}{extension}").write_bytes(b"synthetic-test-artifact")
                 source, media = self.make_source_archive(directory, inputs, target, value)
                 _, piper_info = self.make_piper_archive(directory, inputs, target, value)
+                _, pyav_info = self.make_pyav_source_archive(directory, inputs, target, value)
                 info = {"version": value, "target": target, "commit": "test",
+                        "source_provenance": {"kind": "explicit-revision", "value": "test"},
                         "ffmpeg_manifest_sha256": media["manifest_sha256"], "ffmpeg": media,
-                        "piper": piper_info,
+                        "piper": piper_info, "pyav": pyav_info,
                         "self_tests": [{"status": "ok", "role": role, "version": value}
                                        for role in ("gui", "worker")]}
                 (directory / f"{prefix}-build-info.json").write_text(json.dumps(info))
@@ -955,7 +1257,7 @@ cmake() {
                     "".join(f"{build.sha256(path)}  {path.name}\n" for path in paths)
                 )
             with patch.object(release, "ARTIFACTS", directory), patch.object(release, "PACKAGING", inputs):
-                self.assertEqual(len(release.validate_assets("v" + value)), 16)
+                self.assertEqual(len(release.validate_assets("v" + value)), 19)
                 source_info = directory / f"TranslateService-{value}-windows-x64-build-info.json"
                 original = json.loads(source_info.read_text())
                 changed = {**original, "ffmpeg": {**original["ffmpeg"], "nonfree": True}}

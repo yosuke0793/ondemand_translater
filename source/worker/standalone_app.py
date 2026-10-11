@@ -15,7 +15,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from local_job_manager import LocalJobManager, default_data_dir
-from app_runtime import app_version, bundle_self_test, configure_runtime, resource_root
+from app_runtime import app_version, bundle_self_test, configure_runtime, resource_root, usage_terms_text
 from credential_store import API_VARIABLES, CredentialError, CredentialStore, validate_speech_region
 
 
@@ -250,7 +250,7 @@ class StandaloneApp:
         for column in range(6):
             settings.columnconfigure(column, weight=1)
         ttk.Label(settings, text="翻訳", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(settings, textvariable=self.translation_backend, values=("argos", "deepl", "gemini"), state="readonly", width=12, style="App.TCombobox").grid(row=0, column=1, padx=4)
+        ttk.Combobox(settings, textvariable=self.translation_backend, values=("argos", "gemini"), state="readonly", width=12, style="App.TCombobox").grid(row=0, column=1, padx=4)
         ttk.Label(settings, text="音声", style="Panel.TLabel").grid(row=0, column=2, sticky="w")
         self.voice_selector = ttk.Combobox(
             settings,
@@ -284,6 +284,10 @@ class StandaloneApp:
             cleanup_actions, text="チェックしたジョブを削除",
             command=self.delete_checked_jobs, style="Quiet.TButton",
         ).pack(side=tk.LEFT, padx=8)
+        ttk.Button(
+            cleanup_actions, text="利用上の注意・規約",
+            command=self.show_usage_terms, style="Quiet.TButton",
+        ).pack(side=tk.LEFT)
 
         ttk.Label(container, text="ジョブ一覧", style="App.TLabel").grid(row=9, column=0, columnspan=3, sticky="w", pady=(14, 5))
         columns = ("check", "job_id", "filename", "status", "progress", "stage", "created", "output")
@@ -442,6 +446,34 @@ class StandaloneApp:
         self.english_srt_path.set("")
         self._refresh()
 
+    def show_usage_terms(self) -> None:
+        try:
+            text = usage_terms_text()
+        except (OSError, UnicodeError, ValueError) as exc:
+            messagebox.showerror("利用上の注意文書を開けません", str(exc), parent=self.root)
+            return
+        window = tk.Toplevel(self.root)
+        window.title("利用上の注意・免責事項・外部サービス規約")
+        window.transient(self.root)
+        window.geometry("850x650")
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(1, weight=1)
+        ttk.Label(
+            window, text="外部サービスの利用は任意です。内容と契約条件を確認し、個別に判断してください。\n"
+            "文書は選択・コピーできます。公式規約のURLはコピーしてブラウザーで確認してください。",
+            wraplength=780,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=12, pady=12)
+        content = tk.Text(window, wrap=tk.WORD, padx=12, pady=12)
+        content.insert("1.0", text)
+        content.configure(state=tk.DISABLED)
+        content.grid(row=1, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(window, orient=tk.VERTICAL, command=content.yview)
+        scrollbar.grid(row=1, column=1, sticky="ns")
+        content.configure(yscrollcommand=scrollbar.set)
+        ttk.Button(window, text="閉じる", command=window.destroy).grid(
+            row=2, column=0, columnspan=2, pady=12,
+        )
+
     def configure_api_keys(self) -> None:
         window = tk.Toplevel(self.root)
         window.title("APIキー設定")
@@ -452,10 +484,13 @@ class StandaloneApp:
             text="APIキーはWindowsの資格情報マネージャー／macOSのキーチェーンに保存します。\n"
             "通常の設定ファイル・ジョブ・ログには保存しません。\n"
             "環境変数にキーがある場合は環境変数が優先されます。\n"
-            "Google・DeepLへ翻訳テキスト、Azure選択時はMicrosoftへ英語字幕を送信します。\n"
+            "Gemini選択時はGoogleへ翻訳テキスト、Azure選択時はMicrosoftへ英語字幕を送信します。\n"
             "Piperの音声生成にはAPIキー不要です。料金・利用条件を確認してください。",
             wraplength=560,
         ).grid(row=0, column=0, columnspan=4, sticky="w", padx=12, pady=12)
+        ttk.Button(
+            window, text="利用上の注意・規約を読む", command=self.show_usage_terms,
+        ).grid(row=0, column=4, padx=12, pady=12, sticky="n")
         entries: dict[str, ttk.Entry] = {}
         statuses: dict[str, tk.StringVar] = {}
 

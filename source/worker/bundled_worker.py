@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import json
 import sys
 from pathlib import Path
 
@@ -18,6 +19,19 @@ def main() -> int:
     if sys.argv[1:2] == ["--bundle-self-test"] and len(sys.argv) <= 3:
         return bundle_self_test("worker", Path(sys.argv[2]) if len(sys.argv) == 3 else None)
     configure_runtime()
+    if sys.argv[1:2] == ["--pyav-decode-self-test"] and len(sys.argv) == 4:
+        import av
+
+        with av.open(sys.argv[2]) as container:
+            stream = container.streams.video[0]
+            frame = next(container.decode(stream), None)
+            if av.__version__ != "15.1.0" or frame is None or (frame.width, frame.height) != (160, 120):
+                raise RuntimeError("Frozen PyAV managed-library decode failed")
+            Path(sys.argv[3]).write_text(json.dumps({
+                "pyav_version": av.__version__,
+                "decoded": {"codec": stream.codec_context.name, "width": frame.width, "height": frame.height},
+            }), encoding="utf-8")
+        return 0
     if is_bundled() and any(
         argument.split("=", 1)[0].startswith("--video-text-overlay")
         for argument in sys.argv[1:]
