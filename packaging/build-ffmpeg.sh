@@ -123,7 +123,10 @@ CONFIGURE_ARGS=(
     --extra-ldflags="-L$PREFIX/lib" --extra-libs=-lm
 )
 if [[ "$TARGET" != macos-* ]]; then
-    CONFIGURE_ARGS+=(--extra-ldflags="-L$PREFIX/lib -static -static-libgcc -static-libstdc++")
+    CONFIGURE_ARGS+=(
+        --extra-ldflags="-L$PREFIX/lib -static -static-libgcc -static-libstdc++"
+        --extra-libs="-lm -lstdc++"
+    )
 fi
 CONFIGURE_ARGS+=("${FFMPEG_TARGET_FLAGS[@]}")
 printf '%q ' "${CONFIGURE_ARGS[@]}" > "$BUILD_DIR/ffmpeg-configure-args.txt"

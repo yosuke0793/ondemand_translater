@@ -58,6 +58,10 @@ converted from MSYS paths to native Windows paths.
 FFmpeg's make program targets are `ffmpeg.exe` and `ffprobe.exe` on Windows,
 and `ffmpeg` and `ffprobe` on macOS. The recipe selects the suffix per target;
 the installed executable names and bundle layout remain unchanged.
+The Windows final static link explicitly includes `-lstdc++` in `--extra-libs`.
+HarfBuzz is C++, so `-static-libstdc++` alone does not add the runtime when
+FFmpeg links with the C compiler. Keep the runtime after dependent libraries
+and retain the static-link flags to avoid a new runtime DLL requirement.
 This changes the build machine's MSYS2 environment; use a dedicated build machine
 or the clean GitHub runner, not a shared development installation. A clean
 GitHub Windows runner provides Inno Setup; locally install it yourself and, if

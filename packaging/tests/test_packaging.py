@@ -32,6 +32,29 @@ import app_runtime
 
 class PackagingTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("bash"), "Bash required")
+    def test_windows_ffmpeg_links_harfbuzz_cpp_runtime_statically(self):
+        recipe = (PACKAGING / "build-ffmpeg.sh").read_text()
+        configure = recipe[recipe.index("CONFIGURE_ARGS=(\n"):recipe.index("printf '%q '")]
+        for target in ("windows-x64", "macos-arm64", "macos-x64"):
+            with self.subTest(target=target):
+                result = subprocess.run(
+                    [shutil.which("bash"), "-c",
+                     'set -euo pipefail\nPREFIX=/prefix\nFFMPEG_TARGET_FLAGS=(--arch=test)\n'
+                     + configure + '\nprintf "%s\\n" "${CONFIGURE_ARGS[@]}"\n'],
+                    env=dict(os.environ, TARGET=target), capture_output=True, text=True, check=True,
+                )
+                args = result.stdout.splitlines()
+                extra_libs = [arg for arg in args if arg.startswith("--extra-libs=")][-1]
+                if target == "windows-x64":
+                    self.assertEqual(extra_libs, "--extra-libs=-lm -lstdc++")
+                    self.assertIn(
+                        "--extra-ldflags=-L/prefix/lib -static -static-libgcc -static-libstdc++",
+                        args,
+                    )
+                else:
+                    self.assertEqual(extra_libs, "--extra-libs=-lm")
+
+    @unittest.skipUnless(shutil.which("bash"), "Bash required")
     def test_managed_ffmpeg_allows_mingw_import_libraries_but_not_static_archives(self):
         directory = PACKAGING / ".work" / "unit-pyav-import-libraries"
         shutil.rmtree(directory, ignore_errors=True)
