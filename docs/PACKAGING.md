@@ -55,6 +55,9 @@ resolved from the selected MINGW64 tools. The make program is explicitly
 MSYS2's `C:\msys64\usr\bin\make.exe`, so CMake cannot choose Strawberry Perl's
 `gmake.exe`. Prefix paths in CMake's inherited compiler/linker flags are also
 converted from MSYS paths to native Windows paths.
+The repository's `.gitattributes` fixes text checkout line endings to LF,
+including hash-pinned Piper license evidence and corresponding-source recipes.
+Do not replace the pinned hashes with Windows CRLF hashes or bypass verification.
 FFmpeg's make program targets are `ffmpeg.exe` and `ffprobe.exe` on Windows,
 and `ffmpeg` and `ffprobe` on macOS. The recipe selects the suffix per target;
 the installed executable names and bundle layout remain unchanged.

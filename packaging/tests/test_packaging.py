@@ -31,6 +31,39 @@ import app_runtime
 
 
 class PackagingTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("git"), "Git required")
+    def test_windows_checkout_preserves_pinned_license_bytes(self):
+        root = PACKAGING.parent
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            shutil.copy2(root / ".gitattributes", repo / ".gitattributes")
+            files = [
+                "packaging/piper_model_license.txt", "packaging/john_model_license.txt",
+                "packaging/piper_model.json", "packaging/build-ffmpeg.sh",
+            ]
+            for name in files:
+                path = repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(root / name, path)
+            git = [shutil.which("git"), "-c", "core.autocrlf=true", "-C", str(repo)]
+            subprocess.run(git + ["init", "-q"], check=True, capture_output=True)
+            subprocess.run(git + ["add", "."], check=True, capture_output=True)
+            export = Path(temporary) / "export"
+            subprocess.run(
+                git + ["checkout-index", "--all", f"--prefix={export.as_posix()}/"],
+                check=True, capture_output=True,
+            )
+            for name in files:
+                self.assertEqual((export / name).read_bytes(), (root / name).read_bytes())
+            manifest = json.loads((export / "packaging/piper_model.json").read_text())
+            for voice in [manifest["voice"], *manifest["additional_voices"]]:
+                for item in voice["files"]:
+                    if item.get("source") == "local":
+                        self.assertEqual(
+                            build.sha256(export / "packaging" / item["name"]), item["sha256"],
+                        )
+
     def test_windows_linkage_accepts_vfw_system_dll_but_rejects_external_runtime(self):
         import ffmpeg_source
 

@@ -50,7 +50,7 @@ def application_source_files(root: Path = ROOT) -> dict[str, Path]:
         "locks/macos-x64.txt",
         "locks/windows-x64.txt",
     )
-    paths = [root / "LICENSE", root / "README.md"]
+    paths = [root / "LICENSE", root / "README.md", root / ".gitattributes"]
     paths.extend(sorted((root / "docs").glob("*.md")))
     paths.extend(sorted((root / "source" / "worker").glob("*.py")))
     paths.extend(sorted((root / "source" / "worker" / "lecture_poc").rglob("*.py")))
