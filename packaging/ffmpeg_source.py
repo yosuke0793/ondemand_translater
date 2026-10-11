@@ -152,7 +152,7 @@ def _verify_native_linkage(binary: Path, target: str, build_dir: Path) -> None:
         imports = [line.rsplit(" ", 1)[-1].lower() for line in output.splitlines()
                    if "DLL Name:" in line]
         system_dlls = {
-            "advapi32.dll", "bcrypt.dll", "comctl32.dll", "comdlg32.dll", "gdi32.dll",
+            "advapi32.dll", "avicap32.dll", "bcrypt.dll", "comctl32.dll", "comdlg32.dll", "gdi32.dll",
             "kernel32.dll", "msvcrt.dll", "ole32.dll", "oleaut32.dll", "shell32.dll",
             "shlwapi.dll", "user32.dll", "version.dll", "winmm.dll", "ws2_32.dll",
             "d3d11.dll", "dxgi.dll", "dwrite.dll", "mf.dll", "mfplat.dll",

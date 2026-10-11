@@ -31,6 +31,25 @@ import app_runtime
 
 
 class PackagingTests(unittest.TestCase):
+    def test_windows_linkage_accepts_vfw_system_dll_but_rejects_external_runtime(self):
+        import ffmpeg_source
+
+        for dll in ("AVICAP32.dll", "libstdc++-6.dll", "avcodec-61.dll"):
+            with self.subTest(dll=dll), \
+                    patch.object(ffmpeg_source.shutil, "which", return_value="objdump"), \
+                    patch.object(ffmpeg_source, "_checked", return_value=subprocess.CompletedProcess(
+                        [], 0, stdout=f"\tDLL Name: KERNEL32.dll\n\tDLL Name: {dll}\n",
+                    )):
+                if dll == "AVICAP32.dll":
+                    ffmpeg_source._verify_native_linkage(
+                        Path("ffmpeg.exe"), "windows-x64", Path("/build"),
+                    )
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "non-OS Windows DLL"):
+                        ffmpeg_source._verify_native_linkage(
+                            Path("ffmpeg.exe"), "windows-x64", Path("/build"),
+                        )
+
     @unittest.skipUnless(shutil.which("bash"), "Bash required")
     def test_windows_ffmpeg_links_harfbuzz_cpp_runtime_statically(self):
         recipe = (PACKAGING / "build-ffmpeg.sh").read_text()

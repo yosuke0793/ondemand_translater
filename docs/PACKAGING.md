@@ -200,6 +200,9 @@ duration, and encodes MP3. `drawtext` is not required because OCR text replaceme
 is omitted. Windows tools are statically linked from the same pinned sources;
 their DLL imports must be OS libraries and actual execution is checked in the
 clean hosted build.
+The Windows OS-library allowlist includes `avicap32.dll`, the system Video for
+Windows capture library documented by Microsoft. This does not allow external
+MinGW runtime DLLs or separately installed FFmpeg DLLs.
 
 Bundle checks invoke both tools with `-version` and `-L`, reject nonfree or
 unredistributable reports, and require the configured GPLv3 license. Source
