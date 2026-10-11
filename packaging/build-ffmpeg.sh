@@ -130,6 +130,8 @@ printf '%q ' "${CONFIGURE_ARGS[@]}" > "$BUILD_DIR/ffmpeg-configure-args.txt"
 printf '\n' >> "$BUILD_DIR/ffmpeg-configure-args.txt"
 (cd "$BUILD_DIR/ffmpeg" && ./configure "${CONFIGURE_ARGS[@]}") \
     2>&1 | tee "$BUILD_DIR/ffmpeg-configure.log"
-make -C "$BUILD_DIR/ffmpeg" -j"${BUILD_JOBS:-2}" ffmpeg ffprobe \
+PROGRAM_SUFFIX=
+[[ "$TARGET" == windows-x64 ]] && PROGRAM_SUFFIX=.exe
+make -C "$BUILD_DIR/ffmpeg" -j"${BUILD_JOBS:-2}" "ffmpeg$PROGRAM_SUFFIX" "ffprobe$PROGRAM_SUFFIX" \
     2>&1 | tee "$BUILD_DIR/ffmpeg-build.log"
 make -C "$BUILD_DIR/ffmpeg" install

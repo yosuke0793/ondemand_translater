@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -29,6 +30,32 @@ import app_runtime
 
 
 class PackagingTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("bash") and shutil.which("make"), "Bash and make required")
+    def test_native_program_targets_use_windows_executable_suffix_only_on_windows(self):
+        recipe = (PACKAGING / "build-ffmpeg.sh").read_text()
+        build_programs = recipe[recipe.index("PROGRAM_SUFFIX=\n"):]
+        for target in ("windows-x64", "macos-arm64", "macos-x64"):
+            suffix = ".exe" if target == "windows-x64" else ""
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                source = directory / "ffmpeg"
+                source.mkdir()
+                (source / "Makefile").write_text(
+                    ".PHONY: install\n"
+                    f"ffmpeg{suffix} ffprobe{suffix}:\n"
+                    "\t@touch $@\n"
+                    f"install: ffmpeg{suffix} ffprobe{suffix}\n"
+                    "\t@touch installed\n"
+                )
+                environment = dict(os.environ, BUILD_DIR=str(directory), TARGET=target, BUILD_JOBS="2")
+                subprocess.run(
+                    [shutil.which("bash"), "-c", "set -euo pipefail\n" + build_programs],
+                    env=environment, capture_output=True, text=True, check=True,
+                )
+                self.assertTrue((source / f"ffmpeg{suffix}").is_file())
+                self.assertTrue((source / f"ffprobe{suffix}").is_file())
+                self.assertTrue((source / "installed").is_file())
+
     @unittest.skipUnless(shutil.which("bash"), "Bash is required to exercise the native recipe")
     def test_windows_recipe_uses_available_native_mingw_tools(self):
         recipe = (PACKAGING / "build-ffmpeg.sh").read_text()
