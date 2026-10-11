@@ -98,6 +98,10 @@ PyAV wheel.
 The dedicated environment is required by `build.py build`; running that command
 from an unrelated environment fails.
 
+The worker's PyInstaller analysis explicitly collects all installed `av`
+submodules, including Cython extensions such as `av.frame` whose imports may
+not be discovered by static analysis. Collection errors fail the build rather
+than silently omitting modules. The GUI does not explicitly collect this set.
 The bundle gate also asks the frozen worker to decode the H.264 fixture with
 library-path overrides removed. This checks PyInstaller's relocated DLL/dylib
 loading in addition to decoding in the source-build interpreter; presence of
@@ -164,7 +168,16 @@ version files.
 
 FFmpeg/ffprobe are now built from source for Windows x64 and both Mac CPUs.
 `packaging/ffmpeg.json` records exact source archives and SHA-256 hashes;
-downloads fail closed on hash mismatch. The build recipe uses a minimal GPLv3
+downloads fail closed on hash mismatch. Standalone FFmpeg source downloads retry
+DNS lookup errors, timeouts, connection errors, and HTTP 408/429/500/502/503/504
+at most three times, waiting 5 and 10 seconds. Each attempt logs the archive
+name and URL; failures retain their original exception. HTTP 404, certificate
+errors and hash mismatches are not retried. Downloads use a temporary `.partial`
+file and enter the source cache only after SHA-256 verification. If DNS errors
+persist, check the logged host (including download redirects) and runner network
+availability before starting a new workflow; retries cannot repair an invalid
+hostname or a persistent upstream outage.
+The build recipe uses a minimal GPLv3
 configuration with H.264/libx264, AAC, MP3 and libass subtitles. Nonfree
 components and unrequested optional codecs are excluded.
 

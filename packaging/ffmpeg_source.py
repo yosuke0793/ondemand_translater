@@ -7,9 +7,12 @@ import json
 import os
 import platform
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path, PurePosixPath
 
@@ -50,8 +53,37 @@ def _fetch_sources(manifest: dict, directory: Path) -> list[dict[str, str]]:
         if not path.is_file() or _sha256(path) != expected:
             path.unlink(missing_ok=True)
             request = urllib.request.Request(url, headers={"User-Agent": "TranslateService source builder"})
-            with urllib.request.urlopen(request, timeout=60) as response, path.open("wb") as output:
-                shutil.copyfileobj(response, output)
+            partial = path.with_suffix(path.suffix + ".partial")
+            try:
+                for attempt in range(3):
+                    print(f"Downloading FFmpeg source {name} from {url} "
+                          f"(attempt {attempt + 1}/3)", flush=True)
+                    try:
+                        with urllib.request.urlopen(request, timeout=60) as response, partial.open("wb") as output:
+                            shutil.copyfileobj(response, output)
+                    except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+                        partial.unlink(missing_ok=True)
+                        if isinstance(exc, urllib.error.HTTPError):
+                            retryable = exc.code in (408, 429, 500, 502, 503, 504)
+                            exc.close()
+                        else:
+                            reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+                            retryable = isinstance(reason, (socket.gaierror, TimeoutError, ConnectionError))
+                        print(f"Download failed for {name} from {url}: {exc}",
+                              file=sys.stderr, flush=True)
+                        if not retryable or attempt == 2:
+                            raise
+                        delay = 5 * (attempt + 1)
+                        print(f"Retrying source download in {delay}s.", file=sys.stderr, flush=True)
+                        time.sleep(delay)
+                    else:
+                        actual = _sha256(partial)
+                        if actual != expected:
+                            raise RuntimeError(f"SHA-256 mismatch for FFmpeg source {name}: {actual}")
+                        partial.replace(path)
+                        break
+            finally:
+                partial.unlink(missing_ok=True)
         actual = _sha256(path)
         if actual != expected:
             path.unlink(missing_ok=True)

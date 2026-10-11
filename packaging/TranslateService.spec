@@ -1,7 +1,7 @@
 import os
 import sys
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 ROOT = Path(SPECPATH).parent
 WORK = ROOT / "packaging" / ".work"
@@ -32,7 +32,8 @@ gui_hidden = [
     "bundle_version",
     "keyring.backends.macOS" if IS_MAC else "keyring.backends.Windows",
 ]
-worker_hidden = gui_hidden + ["lecture_poc.__main__", "piper.espeakbridge"]
+worker_hidden = (gui_hidden + ["lecture_poc.__main__", "piper.espeakbridge"]
+                 + collect_submodules("av", on_error="raise"))
 excluded = ["pytest", "IPython", "cv2", "pytesseract"]
 
 gui = Analysis(

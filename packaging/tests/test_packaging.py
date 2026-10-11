@@ -31,6 +31,86 @@ import app_runtime
 
 
 class PackagingTests(unittest.TestCase):
+    def test_ffmpeg_source_download_retries_dns_and_preserves_verified_cache(self):
+        import socket
+        import urllib.error
+        import ffmpeg_source
+
+        content = b"verified source archive"
+        source = {"name": "source.tar.gz", "url": "https://example.invalid/source.tar.gz",
+                  "sha256": hashlib.sha256(content).hexdigest()}
+        error = urllib.error.URLError(socket.gaierror(8, "nodename not known"))
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            with patch.object(ffmpeg_source.urllib.request, "urlopen",
+                              side_effect=[error, io.BytesIO(content)]) as download, \
+                    patch.object(ffmpeg_source.time, "sleep") as sleep:
+                self.assertEqual(ffmpeg_source._fetch_sources({"sources": [source]}, directory), [source])
+                sleep.assert_called_once_with(5)
+                self.assertEqual(download.call_count, 2)
+                self.assertEqual((directory / source["name"]).read_bytes(), content)
+                ffmpeg_source._fetch_sources({"sources": [source]}, directory)
+                self.assertEqual(download.call_count, 2)
+                self.assertEqual(list(directory.glob("*.partial")), [])
+
+    def test_ffmpeg_source_download_failure_boundaries_and_partial_cleanup(self):
+        import socket
+        import ssl
+        import urllib.error
+        import ffmpeg_source
+
+        source = {"name": "source.tar.gz", "url": "https://example.invalid/source.tar.gz",
+                  "sha256": hashlib.sha256(b"expected").hexdigest()}
+        cases = [
+            (urllib.error.URLError(socket.gaierror(8, "nodename not known")), 3),
+            (urllib.error.HTTPError(source["url"], 503, "Unavailable", {}, None), 3),
+            (urllib.error.HTTPError(source["url"], 404, "Not Found", {}, None), 1),
+            (urllib.error.URLError(ssl.SSLCertVerificationError("invalid certificate")), 1),
+            (TimeoutError("timed out"), 3),
+        ]
+        for error, attempts in cases:
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                with patch.object(ffmpeg_source.urllib.request, "urlopen", side_effect=error) as download, \
+                        patch.object(ffmpeg_source.time, "sleep") as sleep:
+                    with self.assertRaises(type(error)):
+                        ffmpeg_source._fetch_sources({"sources": [source]}, directory)
+                    self.assertEqual(download.call_count, attempts)
+                    self.assertEqual(sleep.call_count, attempts - 1)
+                    self.assertEqual(list(directory.iterdir()), [])
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            with patch.object(ffmpeg_source.urllib.request, "urlopen",
+                              return_value=io.BytesIO(b"tampered")) as download, \
+                    patch.object(ffmpeg_source.time, "sleep") as sleep:
+                with self.assertRaisesRegex(RuntimeError, "SHA-256 mismatch"):
+                    ffmpeg_source._fetch_sources({"sources": [source]}, directory)
+                download.assert_called_once()
+                sleep.assert_not_called()
+                self.assertEqual(list(directory.iterdir()), [])
+
+    def test_ffmpeg_source_retry_discards_interrupted_download(self):
+        import ffmpeg_source
+
+        class InterruptedResponse(io.BytesIO):
+            def read(self, size=-1):
+                if self.tell():
+                    raise ConnectionResetError("connection reset during transfer")
+                return super().read(size)
+
+        content = b"complete archive"
+        source = {"name": "source.tar.gz", "url": "https://example.invalid/source.tar.gz",
+                  "sha256": hashlib.sha256(content).hexdigest()}
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            with patch.object(ffmpeg_source.urllib.request, "urlopen",
+                              side_effect=[InterruptedResponse(b"incomplete"), io.BytesIO(content)]), \
+                    patch.object(ffmpeg_source.time, "sleep") as sleep:
+                ffmpeg_source._fetch_sources({"sources": [source]}, directory)
+                self.assertEqual((directory / source["name"]).read_bytes(), content)
+                self.assertEqual(list(directory.glob("*.partial")), [])
+                sleep.assert_called_once_with(5)
+
     def test_dmg_retries_only_resource_busy_and_still_verifies_image(self):
         for failures, error_message in (
             (1, "hdiutil: create failed - Resource busy"),
@@ -762,6 +842,8 @@ cmake() {
         hooks.collect_data_files = Mock(side_effect=[assets, [
             ("/installed/piper/espeak-ng-data/voices/en", "piper/espeak-ng-data/voices"),
         ]])
+        av_modules = ["av", "av.frame", "av.audio.frame", "av.video.frame", "av._core"]
+        hooks.collect_submodules = Mock(return_value=av_modules)
         model_dir = PACKAGING / ".work" / "unit-piper-model"
         model_dir.mkdir(parents=True, exist_ok=True)
         for name in (
@@ -780,6 +862,7 @@ cmake() {
             unittest.mock.call("faster_whisper"),
             unittest.mock.call("piper", includes=["espeak-ng-data/**/*"]),
         ])
+        hooks.collect_submodules.assert_called_once_with("av", on_error="raise")
         for asset in assets:
             self.assertIn(asset, calls["Analysis"][1][1]["datas"])
         self.assertEqual(len(calls["Analysis"]), 2)
@@ -804,6 +887,9 @@ cmake() {
         self.assertNotIn("lecture_poc.__main__", calls["Analysis"][0][1]["hiddenimports"])
         self.assertIn("lecture_poc.__main__", calls["Analysis"][1][1]["hiddenimports"])
         self.assertIn("piper.espeakbridge", calls["Analysis"][1][1]["hiddenimports"])
+        for module in av_modules:
+            self.assertIn(module, calls["Analysis"][1][1]["hiddenimports"])
+            self.assertNotIn(module, calls["Analysis"][0][1]["hiddenimports"])
         for voice in piper_model.supported_voices():
             for asset in piper_model.voice_manifest(voice)["files"]:
                 self.assertIn(
