@@ -817,8 +817,44 @@ cmake() {
                 build.version()
 
     def test_source_and_spec_parse(self):
-        for path in list(PACKAGING.glob("*.py")) + list(PACKAGING.glob("*.spec")):
+        for path in list(PACKAGING.rglob("hook-*.py")) + list(PACKAGING.glob("*.py")) + list(PACKAGING.glob("*.spec")):
             ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+    def test_managed_av_hook_collects_extensions_without_importing_av(self):
+        for target, suffix in (("windows-x64", ".cp312-win_amd64.pyd"),
+                               ("macos-arm64", ".cpython-312-darwin.so")):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
+                package = Path(temporary) / "av"
+                package.mkdir()
+                (package / "__init__.py").write_text('raise RuntimeError("must not import av")')
+                modules = ["_core", "frame", "audio/frame", "video/frame", "codec/context"]
+                for name in modules:
+                    extension = package / (name + suffix)
+                    extension.parent.mkdir(exist_ok=True)
+                    extension.touch()
+                (package / "audio" / "__init__.py").touch()
+                (package / "__pycache__").mkdir()
+                (package / "__pycache__" / "ignored.pyc").touch()
+                libraries = [Path(temporary) / ("avcodec-61.dll" if target.startswith("windows")
+                                                else "libavcodec.61.dylib")]
+                namespace = {}
+                with patch.object(importlib.util, "find_spec", return_value=Mock(
+                        submodule_search_locations=[str(package)])), \
+                        patch.object(build, "native_target", return_value=target), \
+                        patch.object(pyav_source, "_library_files", return_value=libraries) as collect:
+                    exec(compile((PACKAGING / "hooks" / "hook-av.py").read_text(), "hook-av.py", "exec"),
+                         namespace)
+                    collect.assert_called_once_with(
+                        pyav_source.WORK / "pyav" / target / "prefix", target,
+                    )
+                    expected = {"av", "av.audio", "fractions", "dataclasses", "uuid",
+                                *("av." + name.replace("/", ".") for name in modules)}
+                    self.assertEqual(set(namespace["hiddenimports"]), expected)
+                    self.assertEqual(namespace["binaries"], [(str(libraries[0]), ".")])
+                    (package / ("frame" + suffix)).unlink()
+                    with self.assertRaisesRegex(RuntimeError, "missing required frame extensions"):
+                        exec(compile((PACKAGING / "hooks" / "hook-av.py").read_text(), "hook-av.py", "exec"),
+                             {})
 
     def test_both_analysis_paths_resources_and_window_modes(self):
         calls = {}
@@ -842,8 +878,6 @@ cmake() {
         hooks.collect_data_files = Mock(side_effect=[assets, [
             ("/installed/piper/espeak-ng-data/voices/en", "piper/espeak-ng-data/voices"),
         ]])
-        av_modules = ["av", "av.frame", "av.audio.frame", "av.video.frame", "av._core"]
-        hooks.collect_submodules = Mock(return_value=av_modules)
         model_dir = PACKAGING / ".work" / "unit-piper-model"
         model_dir.mkdir(parents=True, exist_ok=True)
         for name in (
@@ -862,11 +896,11 @@ cmake() {
             unittest.mock.call("faster_whisper"),
             unittest.mock.call("piper", includes=["espeak-ng-data/**/*"]),
         ])
-        hooks.collect_submodules.assert_called_once_with("av", on_error="raise")
         for asset in assets:
             self.assertIn(asset, calls["Analysis"][1][1]["datas"])
         self.assertEqual(len(calls["Analysis"]), 2)
         for _, kwargs in calls["Analysis"]:
+            self.assertEqual(kwargs["hookspath"], [str(PACKAGING / "hooks")])
             self.assertIn("cv2", kwargs["excludes"])
             self.assertIn("pytesseract", kwargs["excludes"])
             self.assertIn(str(PACKAGING.parent / "source" / "worker"), kwargs["pathex"])
@@ -887,9 +921,6 @@ cmake() {
         self.assertNotIn("lecture_poc.__main__", calls["Analysis"][0][1]["hiddenimports"])
         self.assertIn("lecture_poc.__main__", calls["Analysis"][1][1]["hiddenimports"])
         self.assertIn("piper.espeakbridge", calls["Analysis"][1][1]["hiddenimports"])
-        for module in av_modules:
-            self.assertIn(module, calls["Analysis"][1][1]["hiddenimports"])
-            self.assertNotIn(module, calls["Analysis"][0][1]["hiddenimports"])
         for voice in piper_model.supported_voices():
             for asset in piper_model.voice_manifest(voice)["files"]:
                 self.assertIn(

@@ -1,7 +1,7 @@
 import os
 import sys
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files
 
 ROOT = Path(SPECPATH).parent
 WORK = ROOT / "packaging" / ".work"
@@ -32,14 +32,13 @@ gui_hidden = [
     "bundle_version",
     "keyring.backends.macOS" if IS_MAC else "keyring.backends.Windows",
 ]
-worker_hidden = (gui_hidden + ["lecture_poc.__main__", "piper.espeakbridge"]
-                 + collect_submodules("av", on_error="raise"))
+worker_hidden = gui_hidden + ["lecture_poc.__main__", "piper.espeakbridge"]
 excluded = ["pytest", "IPython", "cv2", "pytesseract"]
 
 gui = Analysis(
     [str(SOURCE / "standalone_app.py")],
     pathex=paths, binaries=[], datas=resources, hiddenimports=gui_hidden,
-    hookspath=[], hooksconfig={}, runtime_hooks=[], excludes=excluded,
+    hookspath=[str(ROOT / "packaging" / "hooks")], hooksconfig={}, runtime_hooks=[], excludes=excluded,
     noarchive=False,
 )
 worker = Analysis(
@@ -48,7 +47,7 @@ worker = Analysis(
     datas=resources + piper_model_files + collect_data_files("faster_whisper")
     + collect_data_files("piper", includes=["espeak-ng-data/**/*"]),
     hiddenimports=worker_hidden,
-    hookspath=[], hooksconfig={}, runtime_hooks=[], excludes=excluded,
+    hookspath=[str(ROOT / "packaging" / "hooks")], hooksconfig={}, runtime_hooks=[], excludes=excluded,
     noarchive=False,
 )
 gui_exe = EXE(

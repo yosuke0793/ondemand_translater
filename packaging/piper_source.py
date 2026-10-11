@@ -45,6 +45,7 @@ def application_source_files(root: Path = ROOT) -> dict[str, Path]:
         "piper_source.py",
         "rebuild_piper_offline.py",
         "TranslateService.spec",
+        "hooks/hook-av.py",
         "locks/bootstrap.txt",
         "locks/macos-arm64.txt",
         "locks/macos-x64.txt",

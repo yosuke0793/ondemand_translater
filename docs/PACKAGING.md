@@ -98,10 +98,14 @@ PyAV wheel.
 The dedicated environment is required by `build.py build`; running that command
 from an unrelated environment fails.
 
-The worker's PyInstaller analysis explicitly collects all installed `av`
-submodules, including Cython extensions such as `av.frame` whose imports may
-not be discovered by static analysis. Collection errors fail the build rather
-than silently omitting modules. The GUI does not explicitly collect this set.
+The custom PyInstaller `hooks/hook-av.py` enumerates installed PyAV Python and
+native-extension files without importing `av` in an isolated analysis process.
+This avoids Windows DLL-loader failures during collection: adding managed
+FFmpeg to `PATH` alone does not configure Python's extension DLL search.
+The hook includes all submodules, checks required frame extensions, preserves
+the standard hook's `fractions`/`dataclasses`/`uuid` hidden imports, and explicitly
+collects the managed shared FFmpeg libraries. Installed-wheel and library hash
+verification still runs before freezing, and frozen decode checks remain mandatory.
 The bundle gate also asks the frozen worker to decode the H.264 fixture with
 library-path overrides removed. This checks PyInstaller's relocated DLL/dylib
 loading in addition to decoding in the source-build interpreter; presence of
