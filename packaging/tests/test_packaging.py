@@ -966,10 +966,17 @@ cmake() {
                 asset["sha256"] = hashlib.sha256(content).hexdigest()
         results = {name: {"voice": name, "wav_duration_seconds": 0.2}
                    for name in piper_model.supported_voices()}
+        failure = None
 
         def run(command, **kwargs):
             if "--bundle-self-test" in command:
                 role = "worker" if Path(command[0]).name == "TranslateWorker" else "gui"
+                if role == "worker" and failure is not None:
+                    if failure == "report":
+                        Path(command[-1]).write_text(json.dumps({
+                            "role": role, "status": "error", "error": "Missing test dependency",
+                        }))
+                    raise subprocess.CalledProcessError(1, command)
                 Path(command[-1]).write_text(json.dumps({
                     "role": role, "status": "ok", "version": build.version(),
                     "tools": {"ffmpeg": {}, "ffprobe": {}},
@@ -986,6 +993,15 @@ cmake() {
                  patch.object(build, "verify_media_tools"), \
                  patch.object(build, "verify_managed_pyav"):
                 self.assertEqual(len(build.verify_bundle(root, "macos-x64")), 2)
+                for failure in ("report", "no-report"):
+                    with self.subTest(failure=failure), redirect_stderr(io.StringIO()) as stderr:
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            build.verify_bundle(root, "macos-x64")
+                        expected = "Missing test dependency" if failure == "report" else "produced no report"
+                        self.assertIn(expected, stderr.getvalue())
+                        if failure == "no-report":
+                            self.assertNotIn("Missing test dependency", stderr.getvalue())
+                failure = None
                 male_asset = directory / "en_US-john-medium.onnx"
                 male_asset.unlink()
                 command.reset_mock()

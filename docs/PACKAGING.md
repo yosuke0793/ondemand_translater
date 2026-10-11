@@ -422,6 +422,12 @@ secrets, and run media tools. They do not use API keys, a display or model
 downloads. A copied/extracted ZIP is re-tested on Windows; a read-only mounted
 DMG is re-tested on macOS. Actions also silently installs, tests and uninstalls
 the per-user Windows installer in an isolated runner directory.
+If a frozen GUI or worker self-test fails, the build logs its JSON report before
+propagating the failure. If startup fails before a report is written, the log
+explicitly says no report was produced; captured process output is also logged.
+Failed Actions builds preserve existing smoke-test JSON files in a separate
+`TranslateService-<target>-diagnostics` artifact. These synthetic-test reports
+contain no API keys or user videos and are not distribution artifacts.
 
 Successful output under ignored `packaging/artifacts/` uses names such as:
 

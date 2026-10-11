@@ -281,8 +281,17 @@ def verify_bundle(bundle: Path, target: str) -> list[dict]:
     for name, role in (("TranslateService", "gui"), ("TranslateWorker", "worker")):
         report = test_dir / f"{role}.json"
         report.unlink(missing_ok=True)
-        run([str(binary_dir / f"{name}{suffix}"), "--bundle-self-test", str(report)],
-            cwd=test_dir, env=environment, capture_output=True, text=True, encoding="utf-8", timeout=180)
+        try:
+            run([str(binary_dir / f"{name}{suffix}"), "--bundle-self-test", str(report)],
+                cwd=test_dir, env=environment, capture_output=True, text=True, encoding="utf-8", timeout=180)
+        except subprocess.SubprocessError:
+            if report.is_file():
+                print(f"Failed {role} bundle self-test report:\n{report.read_text(encoding='utf-8')}",
+                      file=sys.stderr, flush=True)
+            else:
+                print(f"Failed {role} bundle self-test produced no report: {report}",
+                      file=sys.stderr, flush=True)
+            raise
         payload = json.loads(report.read_text(encoding="utf-8"))
         if (payload.get("status"), payload.get("role"), payload.get("version")) != ("ok", role, version()):
             raise RuntimeError(f"Invalid frozen self-test report: {payload}")
