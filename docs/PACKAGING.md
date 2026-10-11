@@ -106,6 +106,11 @@ The hook includes all submodules, checks required frame extensions, preserves
 the standard hook's `fractions`/`dataclasses`/`uuid` hidden imports, and explicitly
 collects the managed shared FFmpeg libraries. Installed-wheel and library hash
 verification still runs before freezing, and frozen decode checks remain mandatory.
+On Windows the source-interpreter decode check temporarily registers both the
+managed FFmpeg DLL directory and the build compiler's runtime directory using
+`os.add_dll_directory`; `PATH` is insufficient for Python extension loading.
+Both registrations are closed on success or failure. These build-only search
+paths are not passed to the isolated frozen worker verification.
 The bundle gate also asks the frozen worker to decode the H.264 fixture with
 library-path overrides removed. This checks PyInstaller's relocated DLL/dylib
 loading in addition to decoding in the source-build interpreter; presence of

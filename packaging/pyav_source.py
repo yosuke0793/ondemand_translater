@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from contextlib import ExitStack
 import importlib.util
 import json
 import os
@@ -321,13 +322,19 @@ def decode_smoke(target: str, fixture: Path) -> dict:
     """Decode one H.264 frame through the installed PyAV/managed FFmpeg shared libraries."""
     record = verify_installed(target)
     prefix = WORK / "pyav" / target / "prefix"
-    dll_directory = os.add_dll_directory(str(prefix / "bin")) if target == "windows-x64" else None
     if target != "windows-x64":
         library_path = str(prefix / "lib")
         os.environ["DYLD_LIBRARY_PATH"] = os.pathsep.join(
             part for part in (library_path, os.environ.get("DYLD_LIBRARY_PATH", "")) if part
         )
-    try:
+    with ExitStack() as dll_directories:
+        if target == "windows-x64":
+            dll_directories.enter_context(os.add_dll_directory(str(prefix / "bin")))
+            compiler = shutil.which("gcc")
+            if compiler is None:
+                raise RuntimeError("MINGW64 GCC runtime directory is missing during managed PyAV decode")
+            compiler_directory = Path(compiler).resolve().parent
+            dll_directories.enter_context(os.add_dll_directory(str(compiler_directory)))
         import av
 
         if av.__version__ != "15.1.0":
@@ -339,9 +346,6 @@ def decode_smoke(target: str, fixture: Path) -> dict:
             frame = next(container.decode(stream), None)
             if frame is None or frame.width != 160 or frame.height != 120:
                 raise RuntimeError("PyAV failed to decode an H.264 frame using managed FFmpeg")
-    finally:
-        if dll_directory is not None:
-            dll_directory.close()
     return {
         "pyav_version": av.__version__,
         "ffmpeg_library_versions": {name: list(version) for name, version in av.library_versions.items()},

@@ -856,6 +856,41 @@ cmake() {
                         exec(compile((PACKAGING / "hooks" / "hook-av.py").read_text(), "hook-av.py", "exec"),
                              {})
 
+    def test_windows_decode_registers_and_closes_managed_and_compiler_dll_directories(self):
+        av = ModuleType("av")
+        av.__version__ = "15.1.0"
+        av.library_versions = {"libavcodec": (61, 1, 0)}
+        stream = Mock(type="video")
+        stream.codec_context.name = "h264"
+        container = unittest.mock.MagicMock()
+        container.__enter__.return_value = container
+        container.streams = [stream]
+        container.decode.return_value = iter([Mock(width=160, height=120)])
+        av.open = Mock(return_value=container)
+        for fail in (False, True):
+            managed = unittest.mock.MagicMock()
+            compiler = unittest.mock.MagicMock()
+            av.open.side_effect = RuntimeError("decode failed") if fail else None
+            container.decode.return_value = iter([Mock(width=160, height=120)])
+            with self.subTest(fail=fail), \
+                    patch.object(pyav_source, "verify_installed", return_value={"pyav_wheel_sha256": "test"}), \
+                    patch.object(pyav_source.shutil, "which", return_value="/mingw64/bin/gcc.exe"), \
+                    patch.object(pyav_source.os, "add_dll_directory", create=True,
+                                 side_effect=[managed, compiler]) as register, \
+                    patch.dict(sys.modules, {"av": av}):
+                if fail:
+                    with self.assertRaisesRegex(RuntimeError, "decode failed"):
+                        pyav_source.decode_smoke("windows-x64", Path("fixture.mp4"))
+                else:
+                    result = pyav_source.decode_smoke("windows-x64", Path("fixture.mp4"))
+                    self.assertEqual(result["decoded"]["width"], 160)
+                self.assertEqual(register.call_args_list, [
+                    unittest.mock.call(str(pyav_source.WORK / "pyav" / "windows-x64" / "prefix" / "bin")),
+                    unittest.mock.call(str(Path("/mingw64/bin/gcc.exe").resolve().parent)),
+                ])
+                managed.__exit__.assert_called_once()
+                compiler.__exit__.assert_called_once()
+
     def test_both_analysis_paths_resources_and_window_modes(self):
         calls = {}
 
