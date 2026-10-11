@@ -12,6 +12,7 @@
 | ユーザー・Mac | [macOSインストール手順](docs/INSTALL_MAC.md) | 必要なツール、ZIP取得、導入、APIキー、起動確認 |
 | ユーザー・Windows | [Windowsインストール手順](docs/INSTALL_WINDOWS.md) | PC確認、App Installer、ZIP取得、導入、環境変数、起動確認 |
 | ユーザー・共通 | [ユーザーガイド](docs/USER_GUIDE.md) | 初回処理、各設定、字幕、用語、再開、保存・整理、更新・削除 |
+| 利用者・配布担当者 | [利用上の注意・免責事項・規約確認](docs/TERMS_AND_DISCLAIMER.md) | ユーザーによるサービス選択、外部送信、料金、権利、無保証、公式規約とライセンス |
 | 不具合を調べる方 | [トラブルシューティング](docs/TROUBLESHOOTING.md) | 症状別の確認、ログの場所、問い合わせの準備 |
 | 開発・保守を行う方 | [開発者ガイド](docs/DEVELOPER_GUIDE.md) | 構成、実行経路、CLI、環境変数、テスト、ビルド、保守上の制限 |
 
