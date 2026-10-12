@@ -1,0 +1,37 @@
+{
+  "ctranslate2": {
+    "version": "4.6.0",
+    "files": [
+      ["ctranslate2-LICENSE", "https://raw.githubusercontent.com/OpenNMT/CTranslate2/v4.6.0/LICENSE", "54aa79d9fe3c09e67a16dcd95b9e88676405a6ec174efda31036983cf7672ecb"],
+      ["ctranslate2-cpu_features-LICENSE", "https://raw.githubusercontent.com/google/cpu_features/8a494eb1e158ec2050e5f699a504fbc9b896a43b/LICENSE", "af272c1b4dd08dd61d43e001d3134119d03ca7a2b057a64f7355fdf27fbea3dd"],
+      ["ctranslate2-cutlass-LICENSE", "https://raw.githubusercontent.com/NVIDIA/cutlass/bbe579a9e3beb6ea6626d9227ec32d0dae119a49/LICENSE.txt", "6fc6ad419e4d26571a14c7c4d26b65345865c20dd8686ddcf5e8673f54d3d233"],
+      ["ctranslate2-cxxopts-LICENSE", "https://raw.githubusercontent.com/jarro2783/cxxopts/c74846a891b3cc3bfa992d588b1295f528d43039/LICENSE", "aa324fbe633a96546bebca975fbbab65caa175894bd00cfa13d7335e7363400c"],
+      ["ctranslate2-googletest-LICENSE", "https://raw.githubusercontent.com/google/googletest/f8d7d77c06936315286eb55f8de22cd23c188571/LICENSE", "9702de7e4117a8e2b20dafab11ffda58c198aede066406496bef670d40a22138"],
+      ["ctranslate2-ruy-LICENSE", "https://raw.githubusercontent.com/google/ruy/363f252289fb7a1fba1703d99196524698cb884d/LICENSE", "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"],
+      ["ctranslate2-spdlog-LICENSE", "https://raw.githubusercontent.com/gabime/spdlog/76fb40d95455f249bd70824ecfcae7a8f0930fa3/LICENSE", "a7241a379cb98d37788f82c2fc2e484c3ae85dae881fd3406f0637644850926f"],
+      ["ctranslate2-thrust-LICENSE", "https://raw.githubusercontent.com/NVIDIA/thrust/d997cd37a95b0fa2f1a0cd4697fd1188a842fbc8/LICENSE", "9e42656b2b02223cee05e2344fee5673d9d5b731ac686ad1e3e543ace6ea6b95"]
+    ]
+  },
+  "flatbuffers": {
+    "version": "25.12.19",
+    "files": [
+      ["flatbuffers-LICENSE", "https://raw.githubusercontent.com/google/flatbuffers/v25.12.19/LICENSE", "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"]
+    ]
+  },
+  "sentencepiece": {
+    "version": "0.2.0",
+    "files": [
+      ["sentencepiece-LICENSE", "https://raw.githubusercontent.com/google/sentencepiece/v0.2.0/LICENSE", "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"],
+      ["sentencepiece-absl-LICENSE", "https://raw.githubusercontent.com/google/sentencepiece/v0.2.0/third_party/absl/LICENSE", "d3e2f59e1d71176dfdb555ece6a41f7a5aa0f52ff21211010ace314f57695f6b"],
+      ["sentencepiece-darts_clone-LICENSE", "https://raw.githubusercontent.com/google/sentencepiece/v0.2.0/third_party/darts_clone/LICENSE", "155f59997298ee336602c49f9c1110f268ac394ca2197eb02647a3555935ad52"],
+      ["sentencepiece-esaxx-LICENSE", "https://raw.githubusercontent.com/google/sentencepiece/v0.2.0/third_party/esaxx/LICENSE", "7c28553d1d3312d65fe309f76a22ebaf33a3d76c8c1e3b98a88ee4654ecb53db"],
+      ["sentencepiece-protobuf-lite-LICENSE", "https://raw.githubusercontent.com/google/sentencepiece/v0.2.0/third_party/protobuf-lite/LICENSE", "6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d"]
+    ]
+  },
+  "tokenizers": {
+    "version": "0.22.1",
+    "files": [
+      ["tokenizers-LICENSE", "https://raw.githubusercontent.com/huggingface/tokenizers/v0.22.1/LICENSE", "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"]
+    ]
+  }
+}

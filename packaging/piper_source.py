@@ -62,6 +62,7 @@ def application_source_files(root: Path = ROOT) -> dict[str, Path]:
     ))
     paths.append(root / "source" / "worker" / "requirements.txt")
     paths.extend(root / "packaging" / name for name in packaging_files)
+    paths.extend(sorted((root / "packaging" / "licenses").glob("*")))
     files = {}
     for path in paths:
         if not path.is_file() or path.is_symlink():

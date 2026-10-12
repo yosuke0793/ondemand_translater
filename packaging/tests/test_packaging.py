@@ -31,6 +31,36 @@ import app_runtime
 
 
 class PackagingTests(unittest.TestCase):
+    def test_supplemental_notices_pin_versions_and_exact_bytes(self):
+        manifest = json.loads((PACKAGING / "licenses" / "manifest.json").read_text())
+        distributions = [{"name": name, "version": entry["version"]} for name, entry in manifest.items()]
+        with tempfile.TemporaryDirectory() as temporary:
+            notices = Path(temporary)
+            metadata = notices / "python-distributions.json"
+            metadata.write_text(json.dumps(distributions))
+            build.copy_supplemental_notices(notices)
+            build.verify_supplemental_notices(notices)
+            self.assertEqual(sum(len(entry["files"]) for entry in manifest.values()), 15)
+            for name, entry in manifest.items():
+                filename = entry["files"][0][0]
+                path = notices / "python" / name / filename
+                original = path.read_bytes()
+                path.unlink()
+                with self.assertRaisesRegex(RuntimeError, "Missing or changed"):
+                    build.verify_supplemental_notices(notices)
+                path.write_bytes(b"tampered")
+                with self.assertRaisesRegex(RuntimeError, "Missing or changed"):
+                    build.verify_supplemental_notices(notices)
+                path.write_bytes(original)
+            distributions[0]["version"] = "unreviewed"
+            metadata.write_text(json.dumps(distributions))
+            with self.assertRaisesRegex(RuntimeError, "version mismatch"):
+                build.verify_supplemental_notices(notices)
+            distributions.pop(0)
+            metadata.write_text(json.dumps(distributions))
+            with self.assertRaisesRegex(RuntimeError, "version mismatch"):
+                build.verify_supplemental_notices(notices)
+
     def test_ffmpeg_source_download_retries_dns_and_preserves_verified_cache(self):
         import socket
         import urllib.error
@@ -687,6 +717,7 @@ cmake() {
             with patch.object(build, "WORK", directory), \
                  patch.object(build, "copy_piper_notices", side_effect=copy_notices), \
                  patch.object(pyav_source, "copy_notices", side_effect=copy_pyav_notices), \
+                 patch.object(build, "copy_supplemental_notices"), \
                  patch.object(build.importlib.metadata, "distributions", return_value=[]):
                 build.generate_metadata("windows-x64")
             notices = directory / "notices"
@@ -1110,6 +1141,13 @@ cmake() {
         shutil.rmtree(root, ignore_errors=True)
         directory = root / "piper-model"
         directory.mkdir(parents=True)
+        notices = root / "third-party-notices"
+        notices.mkdir()
+        supplemental = json.loads((PACKAGING / "licenses" / "manifest.json").read_text())
+        (notices / "python-distributions.json").write_text(json.dumps([
+            {"name": name, "version": entry["version"]} for name, entry in supplemental.items()
+        ]))
+        build.copy_supplemental_notices(notices)
         for name in ("TranslateService", "TranslateWorker", "ffmpeg", "ffprobe"):
             (root / name).touch()
         manifest = piper_model.load_model_manifest()

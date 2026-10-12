@@ -503,6 +503,73 @@ that architecture. Do not reuse/move a published version tag.
 
 ## Optional signing/notarization
 
+### Pre-publication review recorded on 2026-10-12
+
+The reviewed artifacts are version `0.1.0`, source revision
+`afb5e4819bb1d737b6ceaf273b4280f012afa95b`, from
+[Actions run 38187705989](https://github.com/yosuke0793/ondemand_translater/actions/runs/38187705989).
+This is a review of that exact candidate, not approval of later builds.
+
+| Check | Result / remaining work |
+| --- | --- |
+| Native Actions builds | Windows x64, macOS arm64 and macOS x64 succeeded |
+| Download integrity | All three Actions ZIP digests matched GitHub's artifact digests |
+| Complete release set | Existing release validator passed for all 19 files, checksums, exact FFmpeg/Piper/PyAV source archives and one shared source revision |
+| Private runtime data | No tracked worker runtime data; Windows portable ZIP, installed Apple Silicon app and mounted Intel app passed the runtime-file-name checks |
+| Primary notices | Application, combined GPL worker, Piper and managed PyAV/FFmpeg notices present; this is not a complete transitive-license clearance |
+| Dependency notice coverage | The notice directories for `ctranslate2==4.6.0`, `flatbuffers==25.12.19`, `sentencepiece==0.2.0` and `tokenizers==0.22.1` were absent in all three inspected bundles |
+| macOS integrity signatures | Installed Apple Silicon and mounted Intel apps passed `codesign --verify --deep --strict`; the current signatures are ad-hoc, not Developer ID/notarization |
+| macOS human acceptance | Maintainer reports real-machine testing complete, including Gemini + Piper conversion and embedded English subtitle playback; do not infer an additional Intel real-machine test from this report |
+| Windows human acceptance | Deferred until a collaborator is available; Actions installer/self-tests are not a substitute |
+| Beginner manual feedback | Further changes deferred until the collaborator's experience report |
+
+**Publication is on hold.** The existing release validator passing does not
+establish that every dependency's copyright/notice obligations are satisfied.
+Before further binary distribution, inspect the exact four dependency versions
+and any embedded third-party components, obtain the required license/copyright
+texts from verified version-matched sources, add them to the build, and verify
+the rebuilt bundles. Limited collaborator distribution is still distribution:
+it does not waive these obligations. The filename checks above also do not
+constitute an exhaustive secret-content scan.
+
+The maintainer selected limited collaborator testing as the near-term scope,
+with distribution signing/notarization prepared before general publication.
+Do not silently publish the current unsigned/ad-hoc-signed candidate or label
+Windows as human-tested. Developer ID/Authenticode credentials, certificate
+procurement and protected release-environment setup remain pending explicit
+preparation; no signing keys have been created or requested.
+
+Close the notice gaps first, then complete Windows real-machine acceptance and
+review the beginner report. Prepare and validate distribution signatures before
+the final checksums and release review. A manual Actions run did not create a
+release, and this review did not create a tag, draft release or public release.
+Documentation/build changes after this revision require new matching
+corresponding-source artifacts; do not mix them with the reviewed candidate.
+
+### Supplemental notice remediation
+
+`packaging/licenses/manifest.json` now records the exact upstream version/ref,
+URL and SHA-256 for 15 unmodified license texts stored in `packaging/licenses/`.
+The supplements cover the four missing primary package licenses, all seven
+git submodules recorded by CTranslate2 4.6.0, and the four bundled third-party
+licenses in SentencePiece 0.2.0. Tokenizers' `tokenizers/LICENSE` is an upstream
+link to the root license, so the full root text is retained rather than the link.
+No license download is needed during builds.
+
+Metadata generation copies these files under `third-party-notices/python/`
+and includes the manifest. Version changes, missing texts or hash changes fail
+the build. Relocated ZIP, mounted DMG and installed-bundle verification checks
+the version-matched texts again. The files are included in the application's
+corresponding-source inventory.
+
+The previously reviewed binaries remain unchanged and still lack these
+supplements. Rebuild all three targets and recheck the exact release set before
+additional distribution. Native dependencies of upstream wheels (including
+platform math/OpenMP runtimes and Tokenizers' Rust dependencies) still need
+separate notice coverage review; the 15 texts alone do not establish complete
+transitive compliance. Windows human acceptance, beginner feedback and
+distribution signing/notarization remain pending as recorded above.
+
 Default Windows binaries/installers are unsigned (SmartScreen may warn).
 macOS builds are ad-hoc signed **only for local execution/integrity**, not
 Developer ID signed/notarized; Gatekeeper can reject downloaded apps.

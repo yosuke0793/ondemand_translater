@@ -53,6 +53,14 @@ metadata. Wheel-provided license/notice texts are retained under python/.
 dependency-lock.txt records the hash-locked native build dependency graph.
 Some upstream wheels do not include full license texts; review their
 metadata and obtain any missing required notices before public publication.
+Version-matched supplemental texts for CTranslate2 4.6.0, FlatBuffers
+25.12.19, SentencePiece 0.2.0 and Tokenizers 0.22.1 are included under
+python/<distribution>/. Their upstream URLs and SHA-256 hashes are recorded
+in supplemental-license-manifest.json. CTranslate2's seven pinned source
+submodule licenses and SentencePiece's four bundled dependency licenses are
+also retained conservatively; inclusion does not assert that every component
+is present in every platform wheel. These supplements are not a claim that
+all native-library or Rust dependency notices have been exhaustively reviewed.
 
 Piper text-to-speech
 --------------------

@@ -197,6 +197,42 @@ def generate_metadata(target: str) -> None:
     (notices / "python-distributions.json").write_text(
         json.dumps(distributions, indent=2) + "\n", encoding="utf-8"
     )
+    copy_supplemental_notices(notices)
+
+
+def verify_supplemental_notices(notices: Path) -> None:
+    manifest_path = PACKAGING / "licenses" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if (notices / "supplemental-license-manifest.json").read_bytes() != manifest_path.read_bytes():
+        raise RuntimeError("Supplemental dependency license manifest mismatch")
+    installed = {item["name"].lower().replace("_", "-"): item["version"]
+                 for item in json.loads((notices / "python-distributions.json").read_text(encoding="utf-8"))}
+    for name, entry in manifest.items():
+        if installed.get(name) != entry["version"]:
+            raise RuntimeError(f"Supplemental license version mismatch: {name}")
+        for filename, url, digest in entry["files"]:
+            if Path(filename).name != filename or not filename:
+                raise RuntimeError(f"Unsafe supplemental license filename: {filename}")
+            path = notices / "python" / name / filename
+            if not path.is_file() or sha256(path) != digest:
+                raise RuntimeError(f"Missing or changed supplemental license: {name}/{filename} ({url})")
+
+
+def copy_supplemental_notices(notices: Path) -> None:
+    root = PACKAGING / "licenses"
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    for name, entry in manifest.items():
+        for filename, url, digest in entry["files"]:
+            if Path(filename).name != filename or not filename:
+                raise RuntimeError(f"Unsafe supplemental license filename: {filename}")
+            source = root / filename
+            if not source.is_file() or sha256(source) != digest:
+                raise RuntimeError(f"Missing or changed pinned license: {filename} ({url})")
+            destination = notices / "python" / name / filename
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+    shutil.copy2(root / "manifest.json", notices / "supplemental-license-manifest.json")
+    verify_supplemental_notices(notices)
 
 
 def executable_dir(bundle: Path) -> Path:
@@ -256,6 +292,11 @@ def verify_bundle(bundle: Path, target: str) -> list[dict]:
     for name in ("TranslateService", "TranslateWorker", "ffmpeg", "ffprobe"):
         if not (binary_dir / f"{name}{suffix}").is_file():
             raise RuntimeError(f"Missing adjacent executable: {name}")
+    notice_roots = {path.parent.resolve() for path in bundle.rglob("python-distributions.json")
+                    if path.parent.name == "third-party-notices"}
+    if len(notice_roots) != 1:
+        raise RuntimeError("Expected one bundled dependency notice directory")
+    verify_supplemental_notices(notice_roots.pop())
     # Run outside the checkout and remove interpreter/tool overrides.
     test_dir = WORK / "smoke" / target
     test_dir.mkdir(parents=True, exist_ok=True)
