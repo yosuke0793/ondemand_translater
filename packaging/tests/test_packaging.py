@@ -874,7 +874,8 @@ cmake() {
             container.decode.return_value = iter([Mock(width=160, height=120)])
             with self.subTest(fail=fail), \
                     patch.object(pyav_source, "verify_installed", return_value={"pyav_wheel_sha256": "test"}), \
-                    patch.object(pyav_source.shutil, "which", return_value="/mingw64/bin/gcc.exe"), \
+                    patch.object(pyav_source.shutil, "which", return_value="C:/mingw64/bin/gcc.exe") as lookup, \
+                    patch.object(Path, "is_file", return_value=True), \
                     patch.object(pyav_source.os, "add_dll_directory", create=True,
                                  side_effect=[managed, compiler]) as register, \
                     patch.dict(sys.modules, {"av": av}):
@@ -886,8 +887,9 @@ cmake() {
                     self.assertEqual(result["decoded"]["width"], 160)
                 self.assertEqual(register.call_args_list, [
                     unittest.mock.call(str(pyav_source.WORK / "pyav" / "windows-x64" / "prefix" / "bin")),
-                    unittest.mock.call(str(Path("/mingw64/bin/gcc.exe").resolve().parent)),
+                    unittest.mock.call(str(Path("C:/msys64/mingw64/bin"))),
                 ])
+                lookup.assert_not_called()
                 managed.__exit__.assert_called_once()
                 compiler.__exit__.assert_called_once()
 

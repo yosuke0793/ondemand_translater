@@ -211,8 +211,8 @@ def _verify_extension(prefix: Path, target: str) -> list[Path]:
     if (package.parent / "av.libs").exists():
         raise RuntimeError("PyAV contains an upstream bundled FFmpeg library directory")
     if target == "windows-x64":
-        objdump = shutil.which("objdump") or r"C:\msys64\mingw64\bin\objdump.exe"
-        if not Path(objdump).is_file() and not shutil.which(objdump):
+        objdump = r"C:\msys64\mingw64\bin\objdump.exe"
+        if not Path(objdump).is_file():
             raise RuntimeError("MINGW64 objdump is required to verify PyAV's FFmpeg linkage")
         linked = set()
         for extension in extensions:
@@ -330,10 +330,9 @@ def decode_smoke(target: str, fixture: Path) -> dict:
     with ExitStack() as dll_directories:
         if target == "windows-x64":
             dll_directories.enter_context(os.add_dll_directory(str(prefix / "bin")))
-            compiler = shutil.which("gcc")
-            if compiler is None:
-                raise RuntimeError("MINGW64 GCC runtime directory is missing during managed PyAV decode")
-            compiler_directory = Path(compiler).resolve().parent
+            compiler_directory = Path("C:/msys64/mingw64/bin")
+            if not (compiler_directory / "gcc.exe").is_file():
+                raise RuntimeError("Build MINGW64 GCC runtime directory is missing: C:/msys64/mingw64/bin")
             dll_directories.enter_context(os.add_dll_directory(str(compiler_directory)))
         import av
 

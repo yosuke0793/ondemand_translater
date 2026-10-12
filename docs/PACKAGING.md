@@ -107,10 +107,13 @@ the standard hook's `fractions`/`dataclasses`/`uuid` hidden imports, and explici
 collects the managed shared FFmpeg libraries. Installed-wheel and library hash
 verification still runs before freezing, and frozen decode checks remain mandatory.
 On Windows the source-interpreter decode check temporarily registers both the
-managed FFmpeg DLL directory and the build compiler's runtime directory using
+managed FFmpeg DLL directory and the build compiler's `C:/msys64/mingw64/bin` runtime directory using
 `os.add_dll_directory`; `PATH` is insufficient for Python extension loading.
 Both registrations are closed on success or failure. These build-only search
 paths are not passed to the isolated frozen worker verification.
+Linkage inspection also uses that directory's `objdump.exe` explicitly. Do not
+resolve these build tools from the installer-test step's `PATH`: hosted runners
+may expose a different MinGW installation with incompatible runtime DLLs.
 The bundle gate also asks the frozen worker to decode the H.264 fixture with
 library-path overrides removed. This checks PyInstaller's relocated DLL/dylib
 loading in addition to decoding in the source-build interpreter; presence of
