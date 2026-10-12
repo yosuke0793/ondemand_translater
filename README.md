@@ -2,19 +2,29 @@
 
 日本語音声のMP4動画から、英語音声と英語字幕付きのMP4動画を作るデスクトップアプリ「Translate Service」です。macOSとWindows向けのインストーラーを用意しています。
 
-## マニュアル
+## ドキュメントの入口・目次
 
-**初めて使う方は、お使いのOSのインストール手順から進めてください。** プログラミングの知識を前提とせず、PCの画面操作から説明しています。
+目的に合わせて、次の入口から読み進めてください。ユーザー向けの文書はプログラミングの知識を前提とせず、PCの画面操作から説明しています。開発者向けの文書を読む必要はありません。
+
+- **担当者からテストを依頼された方**：[協力者向けテスト案内](docs/TEST_USER_GUIDE.md)から始めます。担当者が直接渡すWindowsセットアップ／macOS DMGの導入、未署名版の実行手順、確認項目、結果の報告方法を案内しています。GitHub Actionsからのダウンロードは不要です。
+- **インストーラーで初めて使う方**：[同梱版のインストール手順](docs/INSTALL_BUNDLED.md) → [利用上の注意](docs/TERMS_AND_DISCLAIMER.md) → [ユーザーガイド](docs/USER_GUIDE.md)の順に進めます。Python等の準備は不要です。
+- **ソースコードから導入する方**：お使いのOSに合わせて[macOSのソース版インストール手順](docs/INSTALL_MAC.md)または[Windowsのソース版インストール手順](docs/INSTALL_WINDOWS.md)を使います。セットアップ／DMGを受け取った方には不要です。
+- **操作やエラーで困った方**：[トラブルシューティング](docs/TROUBLESHOOTING.md)で症状を探します。
+- **開発・保守・配布を行う方**：[開発者ガイド](docs/DEVELOPER_GUIDE.md)と[配布ビルド・リリース手順](docs/PACKAGING.md)を参照してください。
+
+### 全ドキュメント一覧
 
 | 対象 | マニュアル | 内容 |
 |---|---|---|
+| テスト協力者・配布担当者 | [協力者向けテスト案内](docs/TEST_USER_GUIDE.md) | インストーラーの受け取り、未署名版の実行、短い動画でのテスト、確認項目、報告テンプレート、配布準備 |
 | ユーザー・同梱版 | [同梱版のインストール手順](docs/INSTALL_BUNDLED.md) | Python等の準備が不要なWindowsセットアップ／macOS DMGとGUIでのAPIキー登録 |
-| ユーザー・Mac | [macOSインストール手順](docs/INSTALL_MAC.md) | 必要なツール、ZIP取得、導入、APIキー、起動確認 |
-| ユーザー・Windows | [Windowsインストール手順](docs/INSTALL_WINDOWS.md) | PC確認、App Installer、ZIP取得、導入、環境変数、起動確認 |
+| ユーザー・Macソース版 | [macOSインストール手順](docs/INSTALL_MAC.md) | 必要なツール、ZIP取得、導入、APIキー、起動確認 |
+| ユーザー・Windowsソース版 | [Windowsインストール手順](docs/INSTALL_WINDOWS.md) | PC確認、App Installer、ZIP取得、導入、環境変数、起動確認 |
 | ユーザー・共通 | [ユーザーガイド](docs/USER_GUIDE.md) | 初回処理、各設定、字幕、用語、再開、保存・整理、更新・削除 |
 | 利用者・配布担当者 | [利用上の注意・免責事項・規約確認](docs/TERMS_AND_DISCLAIMER.md) | ユーザーによるサービス選択、外部送信、料金、権利、無保証、公式規約とライセンス |
 | 不具合を調べる方 | [トラブルシューティング](docs/TROUBLESHOOTING.md) | 症状別の確認、ログの場所、問い合わせの準備 |
 | 開発・保守を行う方 | [開発者ガイド](docs/DEVELOPER_GUIDE.md) | 構成、実行経路、CLI、環境変数、テスト、ビルド、保守上の制限 |
+| ビルド・配布を行う方 | [配布ビルド・リリース手順](docs/PACKAGING.md) | OS別ビルド、自動検証、ライセンス・対応ソース、Actions成果物、配布前の確認と残課題 |
 
 ## 主な機能
 
