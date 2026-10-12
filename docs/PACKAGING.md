@@ -555,6 +555,10 @@ git submodules recorded by CTranslate2 4.6.0, and the four bundled third-party
 licenses in SentencePiece 0.2.0. Tokenizers' `tokenizers/LICENSE` is an upstream
 link to the root license, so the full root text is retained rather than the link.
 No license download is needed during builds.
+Vendored `*-LICENSE` originals have Git text conversion disabled so upstream
+CRLF bytes (notably spdlog's license) retain their pinned SHA-256 on every host.
+The checkout regression verifies all 15 originals with `core.autocrlf=true`;
+checking only the existing developer worktree is insufficient.
 
 Metadata generation copies these files under `third-party-notices/python/`
 and includes the manifest. Version changes, missing texts or hash changes fail

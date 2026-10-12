@@ -3,3 +3,4 @@
 *.mp4 -text
 *.wav -text
 *.db -text
+packaging/licenses/*-LICENSE -text

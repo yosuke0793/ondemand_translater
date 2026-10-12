@@ -192,6 +192,9 @@ class PackagingTests(unittest.TestCase):
                 "packaging/piper_model_license.txt", "packaging/john_model_license.txt",
                 "packaging/piper_model.json", "packaging/build-ffmpeg.sh",
             ]
+            supplemental = json.loads((PACKAGING / "licenses" / "manifest.json").read_text())
+            files.extend("packaging/licenses/" + item[0]
+                         for entry in supplemental.values() for item in entry["files"])
             for name in files:
                 path = repo / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -206,6 +209,9 @@ class PackagingTests(unittest.TestCase):
             )
             for name in files:
                 self.assertEqual((export / name).read_bytes(), (root / name).read_bytes())
+            for entry in supplemental.values():
+                for filename, _, digest in entry["files"]:
+                    self.assertEqual(build.sha256(export / "packaging" / "licenses" / filename), digest)
             manifest = json.loads((export / "packaging/piper_model.json").read_text())
             for voice in [manifest["voice"], *manifest["additional_voices"]]:
                 for item in voice["files"]:
