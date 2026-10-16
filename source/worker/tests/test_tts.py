@@ -483,6 +483,39 @@ class AudioIntegrationTests(ScratchTest):
         metadata = (self.directory / "audio-+100%.mp3.meta.json").read_text()
         self.assertIn('"voice": "en_US-john-medium"', metadata)
 
+    def test_mixer_batches_many_subtitle_inputs(self) -> None:
+        entries = [
+            f"{index}\n00:00:00,000 --> 00:00:00,100\nLine {index}"
+            for index in range(1, 66)
+        ]
+        source = self.directory / "many-lines.srt"
+        source.write_text("\n\n".join(entries), encoding="utf-8")
+        video = self.directory / "input.wav"
+        video.write_bytes(wav_bytes(1.0, 0))
+        output = self.directory / "many-lines.mp3"
+        backend = Mock()
+        backend.synthesize.side_effect = lambda text, target: target.write_bytes(wav_bytes(0.05))
+        commands = []
+        runner = pipeline.run_command
+
+        def record_command(command, step):
+            commands.append(command)
+            runner(command, step)
+
+        with patch.object(pipeline, "create_backend", return_value=backend), patch.object(
+            pipeline, "run_command", side_effect=record_command,
+        ):
+            pipeline.generate_en_mp3(
+                source, source, video, output, None, "+100%", False, 1,
+                "strict", "piper", "tts-aligned", None,
+            )
+
+        self.assertEqual(backend.synthesize.call_count, 65)
+        self.assertEqual(len(commands), 4)
+        self.assertTrue(all(command.count("-i") <= pipeline.TTS_MIX_BATCH_SIZE + 1 for command in commands))
+        self.assertGreaterEqual(pipeline.get_media_duration_seconds(output), 1.0)
+        self.assertFalse((self.directory / ".tts_segments").exists())
+
     def test_synthesis_failure_cleans_segments_and_does_not_write_metadata(self) -> None:
         source = self.directory / "en.srt"
         source.write_text(SOURCE_SRT, encoding="utf-8")

@@ -36,6 +36,63 @@ class MemoryBackend:
         del self.values[service, username]
 
 
+class JobLogWindowTests(unittest.TestCase):
+    def test_no_selection_is_reported(self) -> None:
+        app = Mock()
+        app.selected_job_id.return_value = None
+        with patch("standalone_app.messagebox.showinfo") as notice, \
+                patch("standalone_app.tk.Toplevel") as window:
+            StandaloneApp.show_selected_log(app)
+        notice.assert_called_once()
+        window.assert_not_called()
+
+    def test_missing_and_unreadable_logs_are_reported(self) -> None:
+        app = Mock()
+        app.selected_job_id.return_value = "selected-job"
+        with tempfile.TemporaryDirectory() as directory:
+            app.manager.logs_dir = Path(directory)
+            with patch("standalone_app.messagebox.showinfo") as notice, \
+                    patch("standalone_app.tk.Toplevel") as window:
+                StandaloneApp.show_selected_log(app)
+            notice.assert_called_once()
+            window.assert_not_called()
+            with patch.object(Path, "read_text", side_effect=PermissionError("denied")), \
+                    patch("standalone_app.messagebox.showerror") as error, \
+                    patch("standalone_app.tk.Toplevel") as window:
+                StandaloneApp.show_selected_log(app)
+            error.assert_called_once()
+            window.assert_not_called()
+
+    def test_selected_log_is_read_only_and_can_be_refreshed(self) -> None:
+        app = Mock()
+        app.selected_job_id.return_value = "selected-job"
+        app.checked_jobs = {"different-job"}
+        with tempfile.TemporaryDirectory() as directory:
+            app.manager.logs_dir = Path(directory)
+            log_path = Path(directory) / "selected-job.log"
+            log_path.write_text("first log\n", encoding="utf-8")
+            with patch("standalone_app.tk.Toplevel"), \
+                    patch("standalone_app.tk.Text") as text, \
+                    patch("standalone_app.ttk.Label"), patch("standalone_app.ttk.Frame"), \
+                    patch("standalone_app.ttk.Scrollbar"), \
+                    patch("standalone_app.ttk.Button") as button, \
+                    patch("standalone_app.messagebox.showerror") as error:
+                StandaloneApp.show_selected_log(app)
+                text.return_value.insert.assert_called_once_with("1.0", "first log\n")
+                text.return_value.configure.assert_any_call(state="disabled")
+                refresh = next(
+                    call.kwargs["command"] for call in button.call_args_list
+                    if call.kwargs["text"] == "更新"
+                )
+                log_path.write_text("updated log\n", encoding="utf-8")
+                refresh()
+                text.return_value.insert.assert_called_with("1.0", "updated log\n")
+                self.assertEqual(text.return_value.configure.call_args.kwargs, {"state": "disabled"})
+                log_path.unlink()
+                refresh()
+                error.assert_called_once()
+
+
 class CredentialStoreTests(unittest.TestCase):
     def test_removed_translation_provider_is_not_read_or_dispatched(self) -> None:
         with patch.object(self.store, "effective_key") as key:

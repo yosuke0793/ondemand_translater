@@ -270,24 +270,27 @@ class StandaloneApp:
         ).grid(row=1, column=1, columnspan=3, sticky="ew", padx=4, pady=(8, 0))
         actions = ttk.Frame(container, style="App.TFrame")
         actions.grid(row=6, column=0, columnspan=3, sticky="ew", pady=4)
-        ttk.Button(actions, text="翻訳開始(キューに追加)", command=self.add_job, style="Accent.TButton").pack(side=tk.LEFT)
-        ttk.Button(actions, text="チェックしたジョブをキャンセル", command=self.cancel_selected, style="Quiet.TButton").pack(side=tk.LEFT, padx=8)
-        ttk.Button(actions, text="APIキー設定", command=self.configure_api_keys, style="Quiet.TButton").pack(side=tk.LEFT)
-        ttk.Label(actions, textvariable=self.status_var, style="App.TLabel").pack(side=tk.RIGHT)
-        cleanup_actions = ttk.Frame(container, style="App.TFrame")
-        cleanup_actions.grid(row=7, column=0, columnspan=3, sticky="w")
-        ttk.Button(
-            cleanup_actions, text="全ジョブの中間データを削除",
-            command=self.delete_job_intermediates, style="Quiet.TButton",
-        ).pack(side=tk.LEFT)
-        ttk.Button(
-            cleanup_actions, text="チェックしたジョブを削除",
-            command=self.delete_checked_jobs, style="Quiet.TButton",
-        ).pack(side=tk.LEFT, padx=8)
-        ttk.Button(
-            cleanup_actions, text="利用上の注意・規約",
-            command=self.show_usage_terms, style="Quiet.TButton",
-        ).pack(side=tk.LEFT)
+        buttons = (
+            ("翻訳開始(キューに追加)", self.add_job, "Accent.TButton"),
+            ("選択したジョブのログを表示", self.show_selected_log, "Quiet.TButton"),
+            ("完了ファイルを開く", self.open_selected, "Quiet.TButton"),
+            ("APIキー設定", self.configure_api_keys, "Quiet.TButton"),
+            ("チェックしたジョブをキャンセル", self.cancel_selected, "Quiet.TButton"),
+            ("チェックしたジョブを削除", self.delete_checked_jobs, "Quiet.TButton"),
+            ("全ジョブの中間データを削除", self.delete_job_intermediates, "Quiet.TButton"),
+            ("利用上の注意・規約", self.show_usage_terms, "Quiet.TButton"),
+        )
+        for index, (text, command, style) in enumerate(buttons):
+            row, column = divmod(index, 4)
+            ttk.Button(actions, text=text, command=command, style=style).grid(
+                row=row, column=column, sticky="ew",
+                padx=(0, 6) if column < 3 else 0, pady=(0, 6) if row == 0 else 0,
+            )
+        for column in range(4):
+            actions.columnconfigure(column, weight=1)
+        ttk.Label(container, textvariable=self.status_var, style="App.TLabel").grid(
+            row=9, column=2, sticky="e", pady=(14, 5),
+        )
 
         ttk.Label(container, text="ジョブ一覧", style="App.TLabel").grid(row=9, column=0, columnspan=3, sticky="w", pady=(14, 5))
         columns = ("check", "job_id", "filename", "status", "progress", "stage", "created", "output")
@@ -304,7 +307,6 @@ class StandaloneApp:
         self.jobs.bind("<Button-1>", self.toggle_job_check)
         self.jobs.bind("<space>", self.toggle_selected_check)
         self.jobs.bind("<Double-1>", self._open_double_clicked)
-        ttk.Button(container, text="完了ファイルを開く", command=self.open_selected, style="Quiet.TButton").grid(row=11, column=2, sticky="e", pady=10)
 
     def choose_video(self) -> None:
         selected = filedialog.askopenfilename(
@@ -671,6 +673,56 @@ class StandaloneApp:
                 parent=self.root,
             )
         self._refresh()
+
+    def show_selected_log(self) -> None:
+        job_id = self.selected_job_id()
+        if not job_id:
+            messagebox.showinfo("対象なし", "ログを表示するジョブの行を選択してください。", parent=self.root)
+            return
+        log_path = self.manager.logs_dir / f"{job_id}.log"
+        try:
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            messagebox.showinfo("ログなし", "ログはまだ作成されていないか、削除されています。\n" + str(log_path), parent=self.root)
+            return
+        except OSError as exc:
+            messagebox.showerror("ログを開けません", str(exc), parent=self.root)
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title(f"ジョブログ: {job_id}")
+        window.transient(self.root)
+        window.geometry("950x650")
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(1, weight=1)
+        ttk.Label(window, text=str(log_path), wraplength=880).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=12, pady=12,
+        )
+        content = tk.Text(window, wrap=tk.WORD, padx=12, pady=12)
+        content.insert("1.0", text)
+        content.configure(state=tk.DISABLED)
+        content.grid(row=1, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(window, orient=tk.VERTICAL, command=content.yview)
+        scrollbar.grid(row=1, column=1, sticky="ns")
+        content.configure(yscrollcommand=scrollbar.set)
+        content.see(tk.END)
+
+        def refresh() -> None:
+            try:
+                updated_text = log_path.read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                messagebox.showerror("ログを更新できません", str(exc), parent=window)
+                return
+            content.configure(state=tk.NORMAL)
+            content.delete("1.0", tk.END)
+            content.insert("1.0", updated_text)
+            content.configure(state=tk.DISABLED)
+            content.see(tk.END)
+
+        actions = ttk.Frame(window)
+        actions.grid(row=2, column=0, columnspan=2, pady=12)
+        ttk.Button(actions, text="更新", command=refresh).pack(side=tk.LEFT, padx=6)
+        ttk.Button(actions, text="閉じる", command=window.destroy).pack(side=tk.LEFT, padx=6)
 
     def open_selected(self) -> None:
         job_id = self.selected_job_id()

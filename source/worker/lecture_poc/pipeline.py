@@ -118,6 +118,7 @@ TRANSCRIPTION_PRESETS: dict[str, TranscriptionSettings] = {
 GEMINI_BATCH_MAX_TEXTS_DEFAULT = 120
 GEMINI_BATCH_MAX_CHARS_DEFAULT = 48_000
 GEMINI_ONE_SHOT_MAX_TEXTS_DEFAULT = 100
+TTS_MIX_BATCH_SIZE = 32
 
 
 def read_positive_int_env(name: str, default: int) -> int:
@@ -607,48 +608,86 @@ def generate_tts_mp3_from_segments(
             text_key = entry.text.strip()
             segment_files.append((start_ms, segment_path_by_text[text_key]))
 
-        command: list[str] = [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "lavfi",
-            "-t",
-            f"{video_duration:.3f}",
-            "-i",
-            "anullsrc=r=24000:cl=mono",
-        ]
-        for _, segment_path in segment_files:
-            command.extend(["-i", str(segment_path)])
+        layers: list[Path] = []
+        for batch_index, offset in enumerate(range(0, len(segment_files), TTS_MIX_BATCH_SIZE)):
+            batch = segment_files[offset : offset + TTS_MIX_BATCH_SIZE]
+            layer_path = segment_dir / f"mix_layer_0_{batch_index:05d}.flac"
+            _run_tts_mix_layer(
+                [path for _, path in batch],
+                layer_path,
+                video_duration,
+                start_times_ms=[start_ms for start_ms, _ in batch],
+                include_silence=True,
+            )
+            layers.append(layer_path)
 
-        filter_parts: list[str] = []
-        delayed_labels: list[str] = []
-        for index, (start_ms, _) in enumerate(segment_files, start=1):
-            label = f"d{index}"
-            filter_parts.append(f"[{index}:a]aresample=24000,adelay={start_ms}|{start_ms}[{label}]")
-            delayed_labels.append(f"[{label}]")
+        level = 1
+        while len(layers) > TTS_MIX_BATCH_SIZE:
+            next_layers: list[Path] = []
+            for batch_index, offset in enumerate(range(0, len(layers), TTS_MIX_BATCH_SIZE)):
+                batch = layers[offset : offset + TTS_MIX_BATCH_SIZE]
+                layer_path = segment_dir / f"mix_layer_{level}_{batch_index:05d}.flac"
+                _run_tts_mix_layer(batch, layer_path, video_duration)
+                next_layers.append(layer_path)
+            layers = next_layers
+            level += 1
 
-        mix_inputs = "[0:a]" + "".join(delayed_labels)
-        filter_parts.append(
-            f"{mix_inputs}amix=inputs={len(segment_files) + 1}:duration=longest:dropout_transition=0:normalize=0,"
-            f"volume={gain:.6f}[mix]"
-        )
-        command.extend(
-            [
-                "-filter_complex",
-                ";".join(filter_parts),
-                "-map",
-                "[mix]",
-                "-c:a",
-                "mp3",
-                "-b:a",
-                "128k",
-                str(en_mp3),
-            ]
-        )
-
-        run_command(command, "generate_en_mp3")
+        _run_tts_mix_layer(layers, en_mp3, video_duration, volume=gain, codec="mp3")
     finally:
         shutil.rmtree(segment_dir, ignore_errors=True)
+
+
+def _run_tts_mix_layer(
+    input_paths: list[Path],
+    output_path: Path,
+    duration: float,
+    start_times_ms: list[int] | None = None,
+    include_silence: bool = False,
+    volume: float = 1.0,
+    codec: str = "flac",
+) -> None:
+    command = ["ffmpeg", "-y"]
+    if include_silence:
+        command.extend(["-f", "lavfi", "-t", f"{duration:.3f}", "-i", "anullsrc=r=24000:cl=mono"])
+    command.extend(["-i", str(input_paths[0])])
+    for input_path in input_paths[1:]:
+        command.extend(["-i", str(input_path)])
+
+    filter_parts: list[str] = []
+    mixed_labels: list[str] = []
+    first_input_index = 0
+    if include_silence:
+        mixed_labels.append("[0:a]")
+        first_input_index = 1
+    for index, input_path in enumerate(input_paths, start=first_input_index):
+        label = f"d{index}"
+        audio_filter = f"[{index}:a]aresample=24000"
+        if start_times_ms is not None:
+            start_ms = start_times_ms[index - first_input_index]
+            audio_filter += f",adelay={start_ms}|{start_ms}"
+        filter_parts.append(f"{audio_filter}[{label}]")
+        mixed_labels.append(f"[{label}]")
+
+    filter_parts.append(
+        f"{''.join(mixed_labels)}amix=inputs={len(mixed_labels)}:duration=longest:"
+        f"dropout_transition=0:normalize=0,volume={volume:.6f}[mix]"
+    )
+    command.extend(
+        [
+            "-filter_complex",
+            ";".join(filter_parts),
+            "-map",
+            "[mix]",
+            "-t",
+            f"{duration:.3f}",
+            "-c:a",
+            codec,
+        ]
+    )
+    if codec == "mp3":
+        command.extend(["-b:a", "128k"])
+    command.append(str(output_path))
+    run_command(command, "generate_en_mp3")
 
 
 def run_command(command: list[str], step_name: str) -> None:
