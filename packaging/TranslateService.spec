@@ -45,7 +45,7 @@ worker = Analysis(
     [str(SOURCE / "bundled_worker.py")],
     pathex=paths, binaries=[],
     datas=resources + piper_model_files + collect_data_files("faster_whisper")
-    + collect_data_files("piper", includes=["espeak-ng-data/**/*"]),
+    + collect_data_files("piper"),
     hiddenimports=worker_hidden,
     hookspath=[str(ROOT / "packaging" / "hooks")], hooksconfig={}, runtime_hooks=[], excludes=excluded,
     noarchive=False,

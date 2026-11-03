@@ -744,6 +744,10 @@ cmake() {
         shutil.rmtree(directory, ignore_errors=True)
         model = directory / "Contents" / "Resources" / "piper-model"
         model.mkdir(parents=True)
+        espeak_data = directory / "Contents" / "Resources" / "piper" / "espeak-ng-data"
+        (espeak_data / "voices").mkdir(parents=True)
+        for name in ("phontab", "phondata", "phonindex"):
+            (espeak_data / name).write_bytes(b"runtime data")
         frameworks = directory / "Contents" / "Frameworks"
         frameworks.mkdir()
         (frameworks / "piper-model").symlink_to("../Resources/piper-model", target_is_directory=True)
@@ -948,10 +952,14 @@ cmake() {
             ("/installed/faster_whisper/assets/silero_encoder_v5.onnx", "faster_whisper/assets"),
             ("/installed/faster_whisper/assets/silero_decoder_v5.onnx", "faster_whisper/assets"),
         ]
-        hooks = ModuleType("PyInstaller.utils.hooks")
-        hooks.collect_data_files = Mock(side_effect=[assets, [
+        piper_assets = [
+            ("/installed/piper/espeak-ng-data/phontab", "piper/espeak-ng-data"),
+            ("/installed/piper/espeak-ng-data/phondata", "piper/espeak-ng-data"),
+            ("/installed/piper/espeak-ng-data/phonindex", "piper/espeak-ng-data"),
             ("/installed/piper/espeak-ng-data/voices/en", "piper/espeak-ng-data/voices"),
-        ]])
+        ]
+        hooks = ModuleType("PyInstaller.utils.hooks")
+        hooks.collect_data_files = Mock(side_effect=[assets, piper_assets])
         model_dir = PACKAGING / ".work" / "unit-piper-model"
         model_dir.mkdir(parents=True, exist_ok=True)
         for name in (
@@ -968,9 +976,9 @@ cmake() {
             shutil.rmtree(model_dir)
         self.assertEqual(hooks.collect_data_files.call_args_list, [
             unittest.mock.call("faster_whisper"),
-            unittest.mock.call("piper", includes=["espeak-ng-data/**/*"]),
+            unittest.mock.call("piper"),
         ])
-        for asset in assets:
+        for asset in assets + piper_assets:
             self.assertIn(asset, calls["Analysis"][1][1]["datas"])
         self.assertEqual(len(calls["Analysis"]), 2)
         for _, kwargs in calls["Analysis"]:
@@ -985,7 +993,7 @@ cmake() {
                 self.assertNotIn("/.venv/", source)
                 self.assertIn(destination, {
                     ".", "lecture_poc/prompts", "third-party-notices", "faster_whisper/assets",
-                    "piper-model", "piper/espeak-ng-data/voices", "docs",
+                    "piper-model", "piper/espeak-ng-data", "piper/espeak-ng-data/voices", "docs",
                 })
             self.assertIn((str(PACKAGING.parent / "docs"), "docs"), kwargs["datas"])
             self.assertTrue(any(destination == "lecture_poc/prompts"
@@ -1001,6 +1009,19 @@ cmake() {
                     (str(model_dir / asset["name"]), "piper-model"),
                     calls["Analysis"][1][1]["datas"],
                 )
+
+    def test_piper_espeak_data_verification_requires_top_level_runtime_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary)
+            data_dir = bundle / "_internal" / "piper" / "espeak-ng-data"
+            voices_dir = data_dir / "voices"
+            voices_dir.mkdir(parents=True)
+            for name in ("phontab", "phondata", "phonindex"):
+                (data_dir / name).write_bytes(b"runtime data")
+            build.verify_piper_espeak_data(bundle)
+            (data_dir / "phontab").unlink()
+            with self.assertRaisesRegex(RuntimeError, "missing files=\\['phontab'\\]"):
+                build.verify_piper_espeak_data(bundle)
 
     def test_piper_model_manifest_and_source_archive_pins(self):
         manifest = piper_model.load_model_manifest()
@@ -1147,6 +1168,10 @@ cmake() {
         shutil.rmtree(root, ignore_errors=True)
         directory = root / "piper-model"
         directory.mkdir(parents=True)
+        espeak_data = root / "_internal" / "piper" / "espeak-ng-data"
+        (espeak_data / "voices").mkdir(parents=True)
+        for name in ("phontab", "phondata", "phonindex"):
+            (espeak_data / name).write_bytes(b"runtime data")
         notices = root / "third-party-notices"
         notices.mkdir()
         supplemental = json.loads((PACKAGING / "licenses" / "manifest.json").read_text())

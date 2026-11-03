@@ -301,6 +301,10 @@ The release validator checks original source hashes, runtime/model provenance
 and matching manifest records, not just the outer archive checksum. The
 offline worker self-test synthesizes a short sentence into a nonempty WAV;
 model files alone are not proof that phonemization or inference works.
+The frozen bundle must also contain the top-level eSpeak-NG runtime files
+(`phontab`, `phondata`, and `phonindex`) plus the `voices` directory. Bundle
+verification checks these files directly so the build cannot pass by falling
+back to a path that exists only on the build machine.
 
 In source mode, the pinned voice is prepared on first use in a per-user cache
 outside the checkout. `PIPER_MODEL_DIR` can point to a preprepared directory

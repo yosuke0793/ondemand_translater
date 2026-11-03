@@ -1389,6 +1389,8 @@ def is_gemini_limit_error(exc: BaseException) -> bool:
 
 
 def is_gemini_alignment_error(exc: BaseException) -> bool:
+    if isinstance(exc, json.JSONDecodeError):
+        return True
     message = "\n".join(str(item) for item in iterate_exception_chain(exc)).lower()
     keywords = [
         "応答件数が入力件数と一致しません",

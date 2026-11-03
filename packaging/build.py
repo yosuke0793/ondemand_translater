@@ -274,9 +274,29 @@ def verify_no_private_data(bundle: Path) -> None:
             raise RuntimeError(f"Forbidden runtime/private file in bundle: {path.relative_to(bundle)}")
 
 
+def verify_piper_espeak_data(bundle: Path) -> None:
+    data_dirs = [
+        path for path in bundle.rglob("espeak-ng-data")
+        if path.is_dir() and path.parent.name == "piper"
+    ]
+    if len(data_dirs) != 1:
+        raise RuntimeError(
+            f"Expected one bundled Piper eSpeak-NG data directory, found {len(data_dirs)}"
+        )
+    data_dir = data_dirs[0]
+    required_files = ("phontab", "phondata", "phonindex")
+    missing = [name for name in required_files if not (data_dir / name).is_file()]
+    if missing or not (data_dir / "voices").is_dir():
+        raise RuntimeError(
+            f"Bundled Piper eSpeak-NG data is incomplete: "
+            f"missing files={missing}, voices_directory={(data_dir / 'voices').is_dir()}"
+        )
+
+
 def verify_bundle(bundle: Path, target: str) -> list[dict]:
     bundle = bundle.resolve()
     verify_no_private_data(bundle)
+    verify_piper_espeak_data(bundle)
     manifest = load_model_manifest()
     expected_models = [manifest["voice"], *manifest.get("additional_voices", [])]
     model_directories = sorted({path.resolve() for path in bundle.rglob("piper-model") if path.is_dir()})
