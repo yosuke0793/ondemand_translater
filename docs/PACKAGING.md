@@ -305,6 +305,9 @@ The frozen bundle must also contain the top-level eSpeak-NG runtime files
 (`phontab`, `phondata`, and `phonindex`) plus the `voices` directory. Bundle
 verification checks these files directly so the build cannot pass by falling
 back to a path that exists only on the build machine.
+On macOS, `Contents/Frameworks` and `Contents/Resources` may expose the same
+data directory through a symlink. Verification counts resolved directories,
+accepting these aliases while still rejecting multiple distinct data directories.
 
 In source mode, the pinned voice is prepared on first use in a per-user cache
 outside the checkout. `PIPER_MODEL_DIR` can point to a preprepared directory

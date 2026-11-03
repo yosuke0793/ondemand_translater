@@ -275,15 +275,15 @@ def verify_no_private_data(bundle: Path) -> None:
 
 
 def verify_piper_espeak_data(bundle: Path) -> None:
-    data_dirs = [
-        path for path in bundle.rglob("espeak-ng-data")
+    data_dirs = {
+        path.resolve() for path in bundle.rglob("espeak-ng-data")
         if path.is_dir() and path.parent.name == "piper"
-    ]
+    }
     if len(data_dirs) != 1:
         raise RuntimeError(
             f"Expected one bundled Piper eSpeak-NG data directory, found {len(data_dirs)}"
         )
-    data_dir = data_dirs[0]
+    data_dir = data_dirs.pop()
     required_files = ("phontab", "phondata", "phonindex")
     missing = [name for name in required_files if not (data_dir / name).is_file()]
     if missing or not (data_dir / "voices").is_dir():

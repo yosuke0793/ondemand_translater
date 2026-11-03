@@ -1023,6 +1023,38 @@ cmake() {
             with self.assertRaisesRegex(RuntimeError, "missing files=\\['phontab'\\]"):
                 build.verify_piper_espeak_data(bundle)
 
+    @unittest.skipIf(sys.platform == "win32", "macOS bundle symlink layout")
+    def test_piper_espeak_data_verification_accepts_macos_resource_symlink(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary)
+            data_dir = bundle / "Contents" / "Resources" / "piper" / "espeak-ng-data"
+            (data_dir / "voices").mkdir(parents=True)
+            for name in ("phontab", "phondata", "phonindex"):
+                (data_dir / name).write_bytes(b"runtime data")
+            framework_package = bundle / "Contents" / "Frameworks" / "piper"
+            framework_package.mkdir(parents=True)
+            (framework_package / "espeak-ng-data").symlink_to(
+                "../../Resources/piper/espeak-ng-data", target_is_directory=True,
+            )
+            self.assertEqual(len(list(bundle.rglob("espeak-ng-data"))), 2)
+            build.verify_piper_espeak_data(bundle)
+            (data_dir / "phontab").unlink()
+            with self.assertRaisesRegex(RuntimeError, "missing files=\\['phontab'\\]"):
+                build.verify_piper_espeak_data(bundle)
+
+    def test_piper_espeak_data_verification_rejects_missing_or_distinct_directories(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary)
+            with self.assertRaisesRegex(RuntimeError, "found 0"):
+                build.verify_piper_espeak_data(bundle)
+            for root in ("first", "second"):
+                data_dir = bundle / root / "piper" / "espeak-ng-data"
+                (data_dir / "voices").mkdir(parents=True)
+                for name in ("phontab", "phondata", "phonindex"):
+                    (data_dir / name).write_bytes(b"runtime data")
+            with self.assertRaisesRegex(RuntimeError, "found 2"):
+                build.verify_piper_espeak_data(bundle)
+
     def test_piper_model_manifest_and_source_archive_pins(self):
         manifest = piper_model.load_model_manifest()
         runtime = manifest["runtime"]
