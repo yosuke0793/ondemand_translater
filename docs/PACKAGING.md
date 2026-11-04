@@ -180,9 +180,10 @@ version files.
 
 FFmpeg/ffprobe are now built from source for Windows x64 and both Mac CPUs.
 `packaging/ffmpeg.json` records exact source archives and SHA-256 hashes;
-downloads fail closed on hash mismatch. Standalone FFmpeg source downloads retry
+downloads fail closed on hash mismatch. Standalone FFmpeg and managed PyAV/FFmpeg
+source downloads share the same retry and verified-cache implementation. They retry
 DNS lookup errors, timeouts, connection errors, and HTTP 408/429/500/502/503/504
-at most three times, waiting 5 and 10 seconds. Each attempt logs the archive
+with at most three attempts, waiting 5 and 10 seconds between attempts. Each attempt logs the archive
 name and URL; failures retain their original exception. HTTP 404, certificate
 errors and hash mismatches are not retried. Downloads use a temporary `.partial`
 file and enter the source cache only after SHA-256 verification. If DNS errors

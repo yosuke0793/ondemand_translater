@@ -222,7 +222,7 @@ def verify_pyav_source_archive(path: Path, target: str, value: str, info: dict) 
             with stream:
                 return stream.read(limit + 1)
 
-        for name in ("pyav.json", "pyav_source.py", "build-pyav-ffmpeg.sh"):
+        for name in ("pyav.json", "pyav_source.py", "build-pyav-ffmpeg.sh", "ffmpeg_source.py"):
             if read(name) != (PACKAGING / name).read_bytes():
                 raise ValueError(f"Managed PyAV recipe/manifest mismatch: {name}")
         expected_names = {f"sources/{source['name']}" for source in expected_sources}
@@ -296,7 +296,7 @@ def verify_pyav_source_archive(path: Path, target: str, value: str, info: dict) 
             "notices/managed-source-manifest.json",
         })
         if set(members) != expected_names | {
-            "pyav.json", "pyav_source.py", "build-pyav-ffmpeg.sh",
+            "pyav.json", "pyav_source.py", "build-pyav-ffmpeg.sh", "ffmpeg_source.py",
         }:
             raise ValueError(f"Unexpected/missing managed PyAV source archive contents: {target}")
         for name in ("build/build.log", "build/ffmpeg-configure-args.txt",

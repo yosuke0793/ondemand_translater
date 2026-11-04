@@ -14,16 +14,17 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath
+
+from ffmpeg_source import _fetch_sources
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGING = ROOT / "packaging"
 WORK = PACKAGING / ".work"
 MANIFEST = PACKAGING / "pyav.json"
 LICENSE = "LGPL-2.1-or-later"
-RECIPE_FILES = ("pyav.json", "pyav_source.py", "build-pyav-ffmpeg.sh")
+RECIPE_FILES = ("pyav.json", "pyav_source.py", "build-pyav-ffmpeg.sh", "ffmpeg_source.py")
 TARGETS = {
     "windows-x64": ("Windows", {"amd64", "x86_64"}),
     "macos-arm64": ("Darwin", {"arm64", "aarch64"}),
@@ -81,24 +82,8 @@ def _manifest() -> dict:
 
 
 def _fetch(source: dict, directory: Path) -> dict:
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / source["name"]
-    if not path.is_file() or _sha256(path) != source["sha256"]:
-        path.unlink(missing_ok=True)
-        partial = path.with_suffix(path.suffix + ".partial")
-        try:
-            request = urllib.request.Request(source["url"], headers={
-                "User-Agent": "TranslateService managed PyAV source builder",
-            })
-            with urllib.request.urlopen(request, timeout=120) as response, partial.open("wb") as output:
-                shutil.copyfileobj(response, output)
-            actual = _sha256(partial)
-            if actual != source["sha256"]:
-                raise RuntimeError(f"SHA-256 mismatch for managed source {source['name']}: {actual}")
-            partial.replace(path)
-        finally:
-            partial.unlink(missing_ok=True)
-    return {**source, "sha256": _sha256(path)}
+    downloaded = _fetch_sources({"sources": [source]}, directory)[0]
+    return {**source, "sha256": downloaded["sha256"]}
 
 
 def _extract(source: Path, destination: Path) -> None:

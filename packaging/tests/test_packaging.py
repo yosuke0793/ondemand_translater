@@ -31,6 +31,41 @@ import app_runtime
 
 
 class PackagingTests(unittest.TestCase):
+    def test_managed_pyav_download_reuses_verified_retry_and_cache(self):
+        import urllib.error
+        import ffmpeg_source
+
+        content = b"managed source archive"
+        source = {"name": "managed.tar.gz", "url": "https://example.invalid/managed.tar.gz",
+                  "sha256": hashlib.sha256(content).hexdigest(), "license": "LGPL-2.1-or-later"}
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            error = urllib.error.URLError(TimeoutError(10060, "connection timed out"))
+            with patch.object(ffmpeg_source.urllib.request, "urlopen",
+                              side_effect=[error, io.BytesIO(content)]) as download, \
+                    patch.object(ffmpeg_source.time, "sleep") as sleep:
+                self.assertEqual(pyav_source._fetch(source, directory), source)
+                sleep.assert_called_once_with(5)
+                self.assertEqual(download.call_count, 2)
+                self.assertEqual(pyav_source._fetch(source, directory), source)
+                self.assertEqual(download.call_count, 2)
+                self.assertEqual(list(directory.glob("*.partial")), [])
+        for response, expected_exception, attempts in (
+            (error, urllib.error.URLError, 3),
+            (urllib.error.HTTPError(source["url"], 404, "Not found", {}, None),
+             urllib.error.HTTPError, 1),
+            (io.BytesIO(b"tampered"), RuntimeError, 1),
+        ):
+            with self.subTest(response=response), tempfile.TemporaryDirectory() as temporary:
+                with patch.object(ffmpeg_source.urllib.request, "urlopen",
+                                  side_effect=response if isinstance(response, Exception) else None,
+                                  return_value=response) as download, \
+                        patch.object(ffmpeg_source.time, "sleep"):
+                    with self.assertRaises(expected_exception):
+                        pyav_source._fetch(source, Path(temporary))
+                    self.assertEqual(download.call_count, attempts)
+                    self.assertEqual(list(Path(temporary).iterdir()), [])
+
     def test_supplemental_notices_pin_versions_and_exact_bytes(self):
         manifest = json.loads((PACKAGING / "licenses" / "manifest.json").read_text())
         distributions = [{"name": name, "version": entry["version"]} for name, entry in manifest.items()]
@@ -539,7 +574,7 @@ cmake() {
         pyav["pyav"]["sha256"] = hashlib.sha256(pyav_archive.getvalue()).hexdigest()
         pyav["ffmpeg"]["sha256"] = hashlib.sha256(ffmpeg_archive.getvalue()).hexdigest()
         (inputs / "pyav.json").write_text(json.dumps(pyav))
-        for name in ("pyav_source.py", "build-pyav-ffmpeg.sh"):
+        for name in ("pyav_source.py", "build-pyav-ffmpeg.sh", "ffmpeg_source.py"):
             shutil.copy2(PACKAGING / name, inputs / name)
         (inputs / ".pyav_sources.json").write_text(json.dumps({
             "pyav": pyav_archive.getvalue().hex(),
@@ -574,7 +609,7 @@ cmake() {
             "source_archive": source_name,
         }
         contents = {name: (inputs / name).read_bytes()
-                    for name in ("pyav.json", "pyav_source.py", "build-pyav-ffmpeg.sh")}
+                    for name in ("pyav.json", "pyav_source.py", "build-pyav-ffmpeg.sh", "ffmpeg_source.py")}
         contents.update({
             "build-info.json": json.dumps(record).encode(),
             "build/ffmpeg-configure-args.txt": configure.encode(),
