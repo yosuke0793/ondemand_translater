@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from time import perf_counter, sleep
 
+from .ffmpeg_filters import escape_filter_value
 from .jp_cleaner import clean_jp_srt
 from .srt_utils import (
     SRTBlock,
@@ -2069,12 +2070,7 @@ def mux_final_video(input_video: Path, en_mp3: Path, final_mp4: Path, force: boo
 
 
 def escape_ffmpeg_filter_path(path: Path) -> str:
-    value = str(path.resolve())
-    value = value.replace("\\", r"\\")
-    value = value.replace(":", r"\:")
-    value = value.replace(",", r"\,")
-    value = value.replace("'", r"\'")
-    return value
+    return escape_filter_value(str(path.resolve()))
 
 
 def estimate_subtitle_band_ratio(en_srt: Path) -> float:
@@ -2128,7 +2124,7 @@ def estimate_font_scale(en_srt: Path) -> float:
 def build_subtitles_filter(en_srt: Path, burn_subs_in_band: bool, burn_subs_band_ratio: float) -> tuple[str, float | None]:
     subtitle_path = escape_ffmpeg_filter_path(en_srt)
     if not burn_subs_in_band:
-        return f"subtitles=filename='{subtitle_path}'", None
+        return f"subtitles=filename={subtitle_path}", None
 
     # Add a black band below the source frame and anchor subtitles inside it.
     band_ratio = burn_subs_band_ratio if burn_subs_band_ratio > 0 else estimate_subtitle_band_ratio(en_srt)
@@ -2140,7 +2136,7 @@ def build_subtitles_filter(en_srt: Path, burn_subs_in_band: bool, burn_subs_band
     )
     return (
         f"pad=iw:ih+ceil(ih*{band_ratio:g}):0:0:black,"
-        f"subtitles=filename='{subtitle_path}':force_style='{force_style}'"
+        f"subtitles=filename={subtitle_path}:force_style={escape_filter_value(force_style)}"
     ), band_ratio
 
 

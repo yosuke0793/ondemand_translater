@@ -71,7 +71,7 @@ ondemand_translater/
 
 ソース版Windowsランナーは `TRANSLATE_WORKER_PYTHON` を `.venv\Scripts\python.exe` に、`PYTHONPATH` をworkerディレクトリに設定します。ソース版のexeだけをコピーしても動作しません。
 
-同梱版は凍結状態と資源の `BUNDLED` マーカーで識別し、旧Windowsビルドと区別します。workerは独立したPyInstallerプロセスとして起動し、外部Pythonの指定を除去します。プロンプトと `VERSION` は同梱資源から読みます。Piperは同梱モデルを使い、システムのTTSコマンドに依存しません。両実行ファイルの `--bundle-self-test [report.json]` は画面・モデル取得・外部API通信なしで資源と依存を検査し、workerは短いPiper音声を実際に生成します。
+同梱版は凍結状態と資源の `BUNDLED` マーカーで識別し、旧Windowsビルドと区別します。workerは独立したPyInstallerプロセスとして起動し、外部Pythonの指定を除去します。プロンプトと `VERSION` は同梱資源から読みます。Piperは同梱モデルを使い、システムのTTSコマンドに依存しません。両実行ファイルの `--bundle-self-test [report.json]` は画面・モデル取得・外部API通信なしで資源と依存を検査し、workerは短いPiper音声を実際に生成し、`'`・`[`・`]`・`,`・`;` を含む一時フォルダの字幕を同梱FFmpegで実際に焼き込みます（変換時と同じフィルタ文字列のエスケープを検証）。
 
 ### ジョブのライフサイクル
 

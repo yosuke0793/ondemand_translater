@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from .ffmpeg_filters import escape_drawtext_text, escape_filter_value
+
 
 _JP_CHAR_RE = re.compile(r"[ぁ-んァ-ン一-龥々ー]")
 _MATH_ONLY_RE = re.compile(r"^[0-9A-Za-z\s\+\-\*/=\^_\(\)\[\]\{\}\|\\<>:;,\.]+$")
@@ -53,24 +55,6 @@ def _iou(a: dict[str, Any], b: dict[str, Any]) -> float:
     area_a = max(1, (ax2 - ax1) * (ay2 - ay1))
     area_b = max(1, (bx2 - bx1) * (by2 - by1))
     return inter / float(area_a + area_b - inter)
-
-
-def _escape_drawtext_text(text: str) -> str:
-    escaped = text
-    escaped = escaped.replace("\\", r"\\")
-    escaped = escaped.replace(":", r"\:")
-    escaped = escaped.replace("'", r"\'")
-    escaped = escaped.replace("%", r"\%")
-    escaped = escaped.replace("\n", r"\n")
-    return escaped
-
-
-def _escape_drawtext_fontvalue(value: str) -> str:
-    escaped = value
-    escaped = escaped.replace("\\", r"\\")
-    escaped = escaped.replace(":", r"\:")
-    escaped = escaped.replace("'", r"\'")
-    return escaped
 
 
 def _resolve_font_file(font_family: str) -> str | None:
@@ -265,9 +249,9 @@ def overlay_translated_regions(
     font_file = _resolve_font_file(font_family)
     font_expr = None
     if font_file:
-        font_expr = f"fontfile='{_escape_drawtext_fontvalue(font_file)}'"
+        font_expr = f"fontfile={escape_filter_value(font_file)}"
     else:
-        font_expr = f"font='{_escape_drawtext_fontvalue(font_family)}'"
+        font_expr = f"font={escape_filter_value(font_family)}"
 
     for region in regions:
         source_text = str(region["text"])
@@ -289,7 +273,7 @@ def overlay_translated_regions(
         )
         draw_filters.append(
             "drawtext="
-            f"text='{_escape_drawtext_text(translated)}':"
+            f"text={escape_drawtext_text(translated)}:"
             f"x={x + 4}:y={y + max(1, int(h * 0.08))}:"
             f"{font_expr}:fontsize={fontsize}:fontcolor={font_color}:"
             "line_spacing=2:"

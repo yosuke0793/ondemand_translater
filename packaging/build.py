@@ -321,7 +321,8 @@ def verify_bundle(bundle: Path, target: str) -> list[dict]:
     test_dir = WORK / "smoke" / target
     test_dir.mkdir(parents=True, exist_ok=True)
     environment = dict(os.environ)
-    for key in ("PYTHONHOME", "PYTHONPATH", "TRANSLATE_PYTHON", "TRANSLATE_WORKER_PYTHON", "DISPLAY"):
+    for key in ("PYTHONHOME", "PYTHONPATH", "TRANSLATE_PYTHON", "TRANSLATE_WORKER_PYTHON", "DISPLAY",
+                "SSL_CERT_FILE", "SSL_CERT_DIR"):
         environment.pop(key, None)
     system_path = str(Path(environment.get("SystemRoot", "C:/Windows")) / "System32") \
         if target.startswith("windows") else "/usr/bin:/bin"

@@ -6,8 +6,10 @@ import importlib
 import io
 import json
 import os
+import ssl
 import subprocess
 import sys
+import tempfile
 import wave
 from pathlib import Path
 from media_license import validate_ffmpeg_license
@@ -59,6 +61,23 @@ def configure_runtime() -> None:
         if not binary.is_file():
             raise FileNotFoundError(f"同梱の動画処理ツールが見つかりません。アプリを再インストールしてください: {binary}")
     os.environ["PATH"] = str(binary_directory) + os.pathsep + os.environ.get("PATH", "")
+    configure_tls_trust()
+
+
+def configure_tls_trust() -> None:
+    # urllib (Argos model downloads) otherwise uses OpenSSL CA paths from the build machine.
+    if not os.environ.get("SSL_CERT_FILE"):
+        import certifi
+
+        os.environ["SSL_CERT_FILE"] = certifi.where()
+
+
+def _tls_trust_report() -> dict:
+    ca_file = ssl.get_default_verify_paths().cafile
+    certificates = ssl.create_default_context().cert_store_stats()["x509_ca"]
+    if not ca_file or certificates <= 0:
+        raise RuntimeError("No HTTPS CA certificates are available; model downloads would fail.")
+    return {"ca_file": ca_file, "ca_certificates": certificates}
 
 
 def worker_environment() -> dict[str, str]:
@@ -116,6 +135,34 @@ def _piper_voice_smoke_test(voice_name: str) -> dict:
     return {"voice": voice_name, "wav_duration_seconds": duration}
 
 
+# Filtergraph metacharacters that are valid in Windows and macOS directory names,
+# e.g. a profile folder such as C:\Users\O'Brien.
+SUBTITLE_SMOKE_DIRECTORY_PREFIX = "subtitle check ' [x], ; "
+
+
+def _subtitle_burn_smoke_test() -> dict:
+    from lecture_poc.pipeline import build_subtitles_filter
+
+    ffmpeg = executable_directory() / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg")
+    with tempfile.TemporaryDirectory(prefix=SUBTITLE_SMOKE_DIRECTORY_PREFIX) as directory:
+        subtitles = Path(directory) / "en_aligned.srt"
+        subtitles.write_text("1\n00:00:00,000 --> 00:00:05,000\nSubtitle check\n", encoding="utf-8")
+        for in_band in (False, True):
+            video_filter, _ = build_subtitles_filter(subtitles, in_band, 0.3)
+            result = subprocess.run(
+                [str(ffmpeg), "-nostdin", "-hide_banner", "-loglevel", "error",
+                 "-f", "lavfi", "-i", "color=c=black:s=320x180:d=1", "-vf", video_filter,
+                 "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                capture_output=True, timeout=120,
+            )
+            if result.returncode != 0:
+                error = result.stderr.decode("utf-8", errors="replace").strip()[-800:]
+                raise RuntimeError(f"Bundled FFmpeg could not burn subtitles from {subtitles}: {error}")
+            if not any(value > 128 for value in result.stdout):
+                raise RuntimeError("Bundled FFmpeg burned no visible subtitle text; check OS font support.")
+    return {"directory_prefix": SUBTITLE_SMOKE_DIRECTORY_PREFIX, "in_band": [False, True]}
+
+
 def bundle_self_test(role: str, report_path: Path | None = None) -> int:
     """Validate a built artifact without a display, credentials or model downloads."""
     try:
@@ -143,6 +190,8 @@ def bundle_self_test(role: str, report_path: Path | None = None) -> int:
                     raise FileNotFoundError(f"Missing bundled VAD resource: {name}")
             vad.get_vad_model()
             piper_report = _piper_smoke_test()
+            tls_report = _tls_trust_report()
+            subtitle_report = _subtitle_burn_smoke_test()
         else:
             raise ValueError(f"Unknown bundle role: {role}")
         tools = {}
@@ -157,6 +206,8 @@ def bundle_self_test(role: str, report_path: Path | None = None) -> int:
         payload = {"status": "ok", "role": role, "version": app_version(), "tools": tools}
         if role == "worker":
             payload["piper"] = piper_report
+            payload["tls"] = tls_report
+            payload["subtitles"] = subtitle_report
         exit_code = 0
     except (ImportError, OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
         payload = {"status": "error", "role": role, "error": str(exc)}

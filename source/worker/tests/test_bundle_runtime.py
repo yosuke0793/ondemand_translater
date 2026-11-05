@@ -4,6 +4,8 @@ import json
 import hashlib
 import io
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -585,6 +587,42 @@ class BundleRuntimeTests(unittest.TestCase):
             self.assertEqual(environment["PATH"], "/bundle" + os.pathsep + "/system")
             self.assertEqual(os.environ["PYTHONHOME"], "/old")
 
+    def test_bundle_tls_uses_bundled_ca_file_unless_user_configured_one(self) -> None:
+        import certifi
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            for name in ("ffmpeg", "ffprobe"):
+                (root / name).touch()
+            with patch.object(app_runtime, "is_bundled", return_value=True), patch.object(
+                app_runtime, "executable_directory", return_value=root
+            ), patch.object(sys, "platform", "darwin"):
+                for configured, expected in ((None, certifi.where()), ("", certifi.where()),
+                                             ("/corporate/ca.pem", "/corporate/ca.pem")):
+                    with self.subTest(configured=configured), patch.dict(os.environ, {"PATH": "/system"}):
+                        os.environ.pop("SSL_CERT_FILE", None)
+                        if configured is not None:
+                            os.environ["SSL_CERT_FILE"] = configured
+                        app_runtime.configure_runtime()
+                        self.assertEqual(os.environ["SSL_CERT_FILE"], expected)
+        with patch.object(app_runtime, "is_bundled", return_value=False), patch.dict(os.environ, {}):
+            os.environ.pop("SSL_CERT_FILE", None)
+            app_runtime.configure_runtime()
+            self.assertNotIn("SSL_CERT_FILE", os.environ)
+
+    def test_tls_trust_report_requires_loadable_ca_certificates(self) -> None:
+        import certifi
+
+        with tempfile.TemporaryDirectory() as temporary_dir, patch.dict(os.environ, {
+            "SSL_CERT_FILE": certifi.where(), "SSL_CERT_DIR": temporary_dir,
+        }):
+            report = app_runtime._tls_trust_report()
+            self.assertEqual(report["ca_file"], certifi.where())
+            self.assertGreater(report["ca_certificates"], 0)
+            os.environ["SSL_CERT_FILE"] = str(Path(temporary_dir) / "missing.pem")
+            with self.assertRaisesRegex(RuntimeError, "CA certificates"):
+                app_runtime._tls_trust_report()
+
     def test_self_test_produces_report_even_without_windowed_stdout(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
@@ -688,6 +726,107 @@ class BundleRuntimeTests(unittest.TestCase):
                 self.assertEqual(app_runtime.bundle_self_test("worker", report), 1)
             self.assertIn("silero_decoder_v5.onnx", json.loads(report.read_text())["error"])
             vad.get_vad_model.assert_not_called()
+
+    def test_worker_self_test_reports_https_ca_store(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            prompts = root / "lecture_poc" / "prompts"
+            prompts.mkdir(parents=True)
+            for name in ("engineering_terms.csv", "whisper_initial_prompt.txt", "jp_clean_ollama.txt"):
+                (prompts / name).touch()
+            for name in ("silero_encoder_v5.onnx", "silero_decoder_v5.onnx"):
+                (root / name).touch()
+            vad = Mock()
+            vad.get_assets_path.return_value = str(root)
+            report = root / "report.json"
+            tls = {"ca_file": "/bundle/certifi/cacert.pem", "ca_certificates": 140}
+            tool_output = subprocess.CompletedProcess(
+                [], 0, stdout="ffmpeg test version\nconfiguration: --enable-gpl --enable-version3\n"
+                "GNU General Public License; either version 3 of the License.\n", stderr="",
+            )
+            for tls_result, expected in ((tls, 0), (RuntimeError("No HTTPS CA certificates"), 1)):
+                with self.subTest(expected=expected), patch.object(app_runtime, "configure_runtime"), \
+                        patch.object(app_runtime, "is_bundled", return_value=True), \
+                        patch.object(app_runtime, "resource_root", return_value=root), \
+                        patch.object(app_runtime.importlib, "import_module", return_value=vad), \
+                        patch.object(app_runtime, "_piper_smoke_test", return_value={"voices": {}}), \
+                        patch.object(app_runtime, "_tls_trust_report", side_effect=[tls_result]), \
+                        patch.object(app_runtime, "_subtitle_burn_smoke_test", return_value={}), \
+                        patch.object(app_runtime.subprocess, "run", return_value=tool_output):
+                    self.assertEqual(app_runtime.bundle_self_test("worker", report), expected)
+                payload = json.loads(report.read_text())
+                if expected == 0:
+                    self.assertEqual(payload["tls"], tls)
+                else:
+                    self.assertIn("HTTPS CA", payload["error"])
+
+    def test_worker_self_test_reports_subtitle_burn_check(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            prompts = root / "lecture_poc" / "prompts"
+            prompts.mkdir(parents=True)
+            for name in ("engineering_terms.csv", "whisper_initial_prompt.txt", "jp_clean_ollama.txt"):
+                (prompts / name).touch()
+            for name in ("silero_encoder_v5.onnx", "silero_decoder_v5.onnx"):
+                (root / name).touch()
+            vad = Mock()
+            vad.get_assets_path.return_value = str(root)
+            report = root / "report.json"
+            subtitles = {"directory_prefix": app_runtime.SUBTITLE_SMOKE_DIRECTORY_PREFIX, "in_band": [False, True]}
+            tool_output = subprocess.CompletedProcess(
+                [], 0, stdout="ffmpeg test version\nconfiguration: --enable-gpl --enable-version3\n"
+                "GNU General Public License; either version 3 of the License.\n", stderr="",
+            )
+            for subtitle_result, expected in ((subtitles, 0), (RuntimeError("could not burn subtitles"), 1)):
+                with self.subTest(expected=expected), patch.object(app_runtime, "configure_runtime"), \
+                        patch.object(app_runtime, "is_bundled", return_value=True), \
+                        patch.object(app_runtime, "resource_root", return_value=root), \
+                        patch.object(app_runtime.importlib, "import_module", return_value=vad), \
+                        patch.object(app_runtime, "_piper_smoke_test", return_value={"voices": {}}), \
+                        patch.object(app_runtime, "_tls_trust_report", return_value={}), \
+                        patch.object(app_runtime, "_subtitle_burn_smoke_test", side_effect=[subtitle_result]), \
+                        patch.object(app_runtime.subprocess, "run", return_value=tool_output):
+                    self.assertEqual(app_runtime.bundle_self_test("worker", report), expected)
+                payload = json.loads(report.read_text())
+                if expected == 0:
+                    self.assertEqual(payload["subtitles"], subtitles)
+                else:
+                    self.assertIn("could not burn subtitles", payload["error"])
+
+    def test_subtitle_burn_smoke_test_uses_pipeline_filter_and_bundled_ffmpeg(self) -> None:
+        bundle = Path(tempfile.gettempdir()) / "bundle"
+        ffmpeg = str(bundle / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"))
+        rendered = subprocess.CompletedProcess([], 0, stdout=bytes([0, 16, 255]), stderr=b"")
+        with patch.object(app_runtime, "executable_directory", return_value=bundle), \
+                patch.object(app_runtime.subprocess, "run", return_value=rendered) as run:
+            report = app_runtime._subtitle_burn_smoke_test()
+        self.assertEqual(report["in_band"], [False, True])
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual([command[0] for command in commands], [ffmpeg, ffmpeg])
+        filters = [command[command.index("-vf") + 1] for command in commands]
+        self.assertTrue(filters[0].startswith("subtitles=filename="))
+        self.assertTrue(filters[1].startswith("pad="))
+        for video_filter in filters:
+            self.assertIn("subtitle check \\\\\\' \\[x\\]\\, \\; ", video_filter)
+
+        failures = (
+            (subprocess.CompletedProcess([], 1, stdout=b"", stderr=b"Unable to open en_aligned.srt"), "Unable to open"),
+            (subprocess.CompletedProcess([], 0, stdout=bytes(64), stderr=b""), "no visible subtitle text"),
+        )
+        for result, message in failures:
+            with self.subTest(message=message), patch.object(app_runtime, "executable_directory", return_value=bundle), \
+                    patch.object(app_runtime.subprocess, "run", return_value=result), \
+                    self.assertRaisesRegex(RuntimeError, message):
+                app_runtime._subtitle_burn_smoke_test()
+
+    def test_subtitle_burn_smoke_test_with_real_ffmpeg(self) -> None:
+        ffmpeg = shutil.which("ffmpeg")
+        listing = subprocess.run([ffmpeg, "-hide_banner", "-filters"], capture_output=True, text=True).stdout \
+            if ffmpeg else ""
+        if not re.search(r"\ssubtitles\s", listing):
+            self.skipTest("ffmpeg with the libass subtitles filter is not on PATH")
+        with patch.object(app_runtime, "executable_directory", return_value=Path(ffmpeg).parent):
+            self.assertEqual(app_runtime._subtitle_burn_smoke_test()["in_band"], [False, True])
 
 
 if __name__ == "__main__":

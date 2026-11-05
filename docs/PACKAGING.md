@@ -451,7 +451,16 @@ Report files are required for the windowed Windows GUI (no stdout console).
 JSON must have `status: ok`, the expected `role` and version and both media-tool
 version strings. The checks import default conversion dependencies, validate
 prompts, construct the secure credential backend without retrieving/storing
-secrets, and run media tools. They do not use API keys, a display or model
+secrets, and run media tools. The worker report also includes `tls`: frozen
+apps set `SSL_CERT_FILE` to the bundled certifi CA file unless the user already
+set one, because urllib-based Argos model downloads otherwise use OpenSSL CA
+paths from the build machine. The build removes inherited `SSL_CERT_FILE` and
+`SSL_CERT_DIR` so this offline check proves the bundled CA file loads. The
+worker report also includes `subtitles`: the worker burns a short subtitle with
+the bundled FFmpeg from a temporary directory whose name contains `'`, `[`, `]`,
+`,` and `;` (as in a profile such as `C:\Users\O'Brien`), using the conversion
+filter builder with and without the band, and requires visible text. They do
+not use API keys, a display or model
 downloads. A copied/extracted ZIP is re-tested on Windows; a read-only mounted
 DMG is re-tested on macOS. Actions also silently installs, tests and uninstalls
 the per-user Windows installer in an isolated runner directory.

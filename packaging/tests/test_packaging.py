@@ -1260,6 +1260,7 @@ cmake() {
 
         def run(command, **kwargs):
             if "--bundle-self-test" in command:
+                self.assertFalse({"SSL_CERT_FILE", "SSL_CERT_DIR"} & set(kwargs["env"]))
                 role = "worker" if Path(command[0]).name == "TranslateWorker" else "gui"
                 if role == "worker" and failure is not None:
                     if failure == "report":
@@ -1282,7 +1283,8 @@ cmake() {
                  patch.object(build, "validate_ffmpeg_license"), \
                  patch.object(build, "verify_media_tools"), \
                  patch.object(build, "verify_managed_pyav"):
-                self.assertEqual(len(build.verify_bundle(root, "macos-x64")), 2)
+                with patch.dict(os.environ, {"SSL_CERT_FILE": "/external/ca.pem", "SSL_CERT_DIR": "/external"}):
+                    self.assertEqual(len(build.verify_bundle(root, "macos-x64")), 2)
                 for failure in ("report", "no-report"):
                     with self.subTest(failure=failure), redirect_stderr(io.StringIO()) as stderr:
                         with self.assertRaises(subprocess.CalledProcessError):
