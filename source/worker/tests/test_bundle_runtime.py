@@ -94,6 +94,77 @@ class JobLogWindowTests(unittest.TestCase):
                 refresh()
                 error.assert_called_once()
 
+    def test_displayed_log_is_saved_as_utf8_text(self) -> None:
+        app = Mock()
+        app.selected_job_id.return_value = "selected-job"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app.manager.logs_dir = root
+            log_path = root / "selected-job.log"
+            log_path.write_text("command: worker\n翻訳を開始しました\n", encoding="utf-8")
+            destination = root / "保存先" / "ジョブログ.txt"
+            destination.parent.mkdir()
+            with patch("standalone_app.tk.Toplevel") as toplevel, \
+                    patch("standalone_app.tk.Text"), \
+                    patch("standalone_app.ttk.Label"), patch("standalone_app.ttk.Frame"), \
+                    patch("standalone_app.ttk.Scrollbar"), \
+                    patch("standalone_app.ttk.Button") as button, \
+                    patch("standalone_app.filedialog.asksaveasfilename", return_value=str(destination)) as dialog, \
+                    patch("standalone_app.messagebox.showinfo") as notice, \
+                    patch("standalone_app.messagebox.showerror") as error:
+                StandaloneApp.show_selected_log(app)
+                commands = {call.kwargs["text"]: call.kwargs["command"] for call in button.call_args_list}
+                log_path.write_text("command: worker\n未表示の追記\n", encoding="utf-8")
+                commands["テキストファイルに保存"]()
+                self.assertEqual(destination.read_text(encoding="utf-8"), "command: worker\n翻訳を開始しました\n")
+                window = toplevel.return_value
+                self.assertIs(dialog.call_args.kwargs["parent"], window)
+                self.assertEqual(dialog.call_args.kwargs["initialfile"], "selected-job_log.txt")
+                self.assertEqual(dialog.call_args.kwargs["defaultextension"], ".txt")
+                self.assertIs(notice.call_args.kwargs["parent"], window)
+                self.assertIn(str(destination), notice.call_args.args[1])
+
+                commands["更新"]()
+                commands["テキストファイルに保存"]()
+                self.assertEqual(destination.read_text(encoding="utf-8"), "command: worker\n未表示の追記\n")
+                log_path.unlink()
+                commands["更新"]()
+                commands["テキストファイルに保存"]()
+            self.assertEqual(destination.read_text(encoding="utf-8"), "command: worker\n未表示の追記\n")
+            error.assert_called_once()
+            self.assertEqual(notice.call_count, 3)
+
+    def test_log_save_cancel_and_write_error_are_handled(self) -> None:
+        app = Mock()
+        app.selected_job_id.return_value = "selected-job"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app.manager.logs_dir = root
+            (root / "selected-job.log").write_text("log\n", encoding="utf-8")
+            with patch("standalone_app.tk.Toplevel") as toplevel, \
+                    patch("standalone_app.tk.Text"), \
+                    patch("standalone_app.ttk.Label"), patch("standalone_app.ttk.Frame"), \
+                    patch("standalone_app.ttk.Scrollbar"), \
+                    patch("standalone_app.ttk.Button") as button, \
+                    patch("standalone_app.filedialog.asksaveasfilename") as dialog, \
+                    patch("standalone_app.messagebox.showinfo") as notice, \
+                    patch("standalone_app.messagebox.showerror") as error:
+                StandaloneApp.show_selected_log(app)
+                save = next(
+                    call.kwargs["command"] for call in button.call_args_list
+                    if call.kwargs["text"] == "テキストファイルに保存"
+                )
+                for cancelled in ("", ()):
+                    dialog.return_value = cancelled
+                    save()
+                error.assert_not_called()
+                dialog.return_value = str(root / "missing-folder" / "log.txt")
+                save()
+            self.assertEqual([path.name for path in root.iterdir()], ["selected-job.log"])
+            notice.assert_not_called()
+            error.assert_called_once()
+            self.assertIs(error.call_args.kwargs["parent"], toplevel.return_value)
+
 
 class CredentialStoreTests(unittest.TestCase):
     def test_removed_translation_provider_is_not_read_or_dispatched(self) -> None:

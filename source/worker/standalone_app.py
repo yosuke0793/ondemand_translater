@@ -708,20 +708,40 @@ class StandaloneApp:
         content.see(tk.END)
 
         def refresh() -> None:
+            nonlocal text
             try:
-                updated_text = log_path.read_text(encoding="utf-8", errors="replace")
+                text = log_path.read_text(encoding="utf-8", errors="replace")
             except OSError as exc:
                 messagebox.showerror("ログを更新できません", str(exc), parent=window)
                 return
             content.configure(state=tk.NORMAL)
             content.delete("1.0", tk.END)
-            content.insert("1.0", updated_text)
+            content.insert("1.0", text)
             content.configure(state=tk.DISABLED)
             content.see(tk.END)
+
+        def save() -> None:
+            selected = filedialog.asksaveasfilename(
+                parent=window,
+                title="ログをテキストファイルに保存",
+                initialfile=f"{job_id}_log.txt",
+                defaultextension=".txt",
+                filetypes=(("Text files", "*.txt"), ("All files", "*.*")),
+            )
+            if not selected:
+                return
+            try:
+                # Save exactly what the user has reviewed on screen, not a newer file state.
+                Path(selected).write_text(text, encoding="utf-8")
+            except OSError as exc:
+                messagebox.showerror("ログを保存できません", str(exc), parent=window)
+                return
+            messagebox.showinfo("保存完了", f"表示中のログを保存しました。\n{selected}", parent=window)
 
         actions = ttk.Frame(window)
         actions.grid(row=2, column=0, columnspan=2, pady=12)
         ttk.Button(actions, text="更新", command=refresh).pack(side=tk.LEFT, padx=6)
+        ttk.Button(actions, text="テキストファイルに保存", command=save).pack(side=tk.LEFT, padx=6)
         ttk.Button(actions, text="閉じる", command=window.destroy).pack(side=tk.LEFT, padx=6)
 
     def open_selected(self) -> None:
