@@ -644,6 +644,28 @@ class BundleRuntimeTests(unittest.TestCase):
                 with self.assertRaises(FileNotFoundError):
                     app_runtime.configure_runtime()
 
+    def test_bundle_runtime_uses_and_validates_bundled_espeak_data(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            for name in ("ffmpeg.exe", "ffprobe.exe"):
+                (root / name).touch()
+            espeak_data = root / "piper" / "espeak-ng-data"
+            (espeak_data / "voices").mkdir(parents=True)
+            for name in ("phontab", "phondata", "phonindex"):
+                (espeak_data / name).touch()
+            with patch.object(app_runtime, "is_bundled", return_value=True), \
+                    patch.object(app_runtime, "executable_directory", return_value=root), \
+                    patch.object(app_runtime, "resource_root", return_value=root), \
+                    patch.object(app_runtime, "configure_tls_trust"), \
+                    patch.object(sys, "platform", "win32"), patch.dict(os.environ, {
+                        "PATH": "/system", "ESPEAK_DATA_PATH": "/stale/build/path",
+                    }):
+                app_runtime.configure_runtime()
+                self.assertEqual(os.environ["ESPEAK_DATA_PATH"], str(espeak_data))
+                (espeak_data / "phontab").unlink()
+                with self.assertRaisesRegex(FileNotFoundError, "phontab"):
+                    app_runtime.configure_runtime()
+
     def test_bundle_worker_env_isolated_and_contains_tool_path(self) -> None:
         with patch.object(app_runtime, "is_bundled", return_value=True), patch.object(
             app_runtime, "executable_directory", return_value=Path("/bundle")
@@ -665,8 +687,14 @@ class BundleRuntimeTests(unittest.TestCase):
             root = Path(temporary_dir)
             for name in ("ffmpeg", "ffprobe"):
                 (root / name).touch()
+            espeak_data = root / "piper" / "espeak-ng-data"
+            (espeak_data / "voices").mkdir(parents=True)
+            for name in ("phontab", "phondata", "phonindex"):
+                (espeak_data / name).touch()
             with patch.object(app_runtime, "is_bundled", return_value=True), patch.object(
                 app_runtime, "executable_directory", return_value=root
+            ), patch.object(
+                app_runtime, "resource_root", return_value=root
             ), patch.object(sys, "platform", "darwin"):
                 for configured, expected in ((None, certifi.where()), ("", certifi.where()),
                                              ("/corporate/ca.pem", "/corporate/ca.pem")):
@@ -676,6 +704,7 @@ class BundleRuntimeTests(unittest.TestCase):
                             os.environ["SSL_CERT_FILE"] = configured
                         app_runtime.configure_runtime()
                         self.assertEqual(os.environ["SSL_CERT_FILE"], expected)
+                        self.assertEqual(os.environ["ESPEAK_DATA_PATH"], str(espeak_data))
         with patch.object(app_runtime, "is_bundled", return_value=False), patch.dict(os.environ, {}):
             os.environ.pop("SSL_CERT_FILE", None)
             app_runtime.configure_runtime()
