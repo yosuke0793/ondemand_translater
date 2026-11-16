@@ -54,13 +54,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./packaging/build-windows.ps1 -Python312 (Get-Command python).Source
-      - name: Test per-user Windows installer and uninstall
+      - name: Test per-user Windows installer and Piper in a Unicode path
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $installer = (Get-ChildItem packaging/artifacts/*-setup.exe).FullName
-          $installDir = Join-Path $PWD "packaging/.work/installed-smoke"
+          $unicodeName = -join ([char[]]@(0x65E5, 0x672C, 0x8A9E))
+          $installDir = Join-Path $PWD "packaging/.work/installed-smoke $unicodeName"
           $process = Start-Process $installer -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$installDir`"", "/GROUP=`"TranslateService Packaging Smoke`"" -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
           try {

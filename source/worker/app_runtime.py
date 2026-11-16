@@ -55,6 +55,8 @@ def worker_command() -> list[str]:
 def configure_runtime() -> None:
     if not is_bundled():
         return
+    if sys.platform == "win32":
+        _check_windows_utf8()
     binary_directory = executable_directory()
     for name in ("ffmpeg", "ffprobe"):
         binary = binary_directory / (f"{name}.exe" if sys.platform == "win32" else name)
@@ -75,6 +77,21 @@ def configure_runtime() -> None:
         )
     os.environ["ESPEAK_DATA_PATH"] = str(espeak_data)
     configure_tls_trust()
+
+
+def _check_windows_utf8() -> None:
+    import ctypes
+
+    get_code_page = ctypes.WinDLL("kernel32").GetACP
+    get_code_page.argtypes = []
+    get_code_page.restype = ctypes.c_uint
+    code_page = get_code_page()
+    if code_page != 65001:
+        raise RuntimeError(
+            f"Bundled Windows runtime requires the UTF-8 process manifest "
+            f"(code page 65001, found {code_page}). "
+            "Reinstall a complete supported build; Windows 10 version 1903 or later is required."
+        )
 
 
 def configure_tls_trust() -> None:

@@ -308,6 +308,15 @@ verification checks these files directly so the build cannot pass by falling
 back to a path that exists only on the build machine.
 At runtime, the frozen worker sets `ESPEAK_DATA_PATH` to this bundled directory
 before importing Piper and fails clearly if any required data is missing.
+Both Windows executables embed `packaging/windows.manifest`, which requests
+the UTF-8 process code page without changing system locale or requiring elevation.
+This keeps Piper's UTF-8 paths and eSpeak-NG's narrow-character Windows APIs
+consistent for non-ASCII user/install directories. The frozen runtime rejects
+a non-UTF-8 process code page explicitly. The manifest requires Windows 10
+version 1903 or later; the supported user platform remains Windows 11 x64.
+Windows CI installs into a path containing Japanese characters and spaces, then
+runs the installed bundle verification, including actual synthesis with both
+Piper voices. Keep `PrivilegesRequired=lowest` and the per-user install location.
 On macOS, `Contents/Frameworks` and `Contents/Resources` may expose the same
 data directory through a symlink. Verification counts resolved directories,
 accepting these aliases while still rejecting multiple distinct data directories.

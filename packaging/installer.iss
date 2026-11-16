@@ -16,6 +16,7 @@ AppPublisher=Yosuke YAMANAKA
 DefaultDirName={localappdata}\Programs\TranslateService
 DefaultGroupName=TranslateService
 PrivilegesRequired=lowest
+MinVersion=10.0.18362
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#OutputDir}

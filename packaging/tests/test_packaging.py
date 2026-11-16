@@ -19,6 +19,7 @@ from types import ModuleType
 from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import Mock, patch
+from xml.etree import ElementTree
 
 PACKAGING = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PACKAGING))
@@ -31,6 +32,47 @@ import app_runtime
 
 
 class PackagingTests(unittest.TestCase):
+    def test_windows_manifest_enables_utf8_without_elevation(self):
+        manifest_path = PACKAGING / "windows.manifest"
+        manifest = ElementTree.parse(manifest_path).getroot()
+        namespaces = {
+            "asm": "urn:schemas-microsoft-com:asm.v3",
+            "settings": "http://schemas.microsoft.com/SMI/2019/WindowsSettings",
+        }
+        code_page = manifest.find(
+            "asm:application/asm:windowsSettings/settings:activeCodePage", namespaces,
+        )
+        self.assertIsNotNone(code_page)
+        self.assertEqual(code_page.text, "UTF-8")
+        level = manifest.find(
+            "asm:trustInfo/asm:security/asm:requestedPrivileges/asm:requestedExecutionLevel",
+            namespaces,
+        )
+        self.assertEqual(level.attrib["level"], "asInvoker")
+        self.assertIn("packaging/windows.manifest", piper_source.application_source_files())
+        installer = (PACKAGING / "installer.iss").read_text()
+        self.assertIn("PrivilegesRequired=lowest", installer)
+        self.assertIn("DefaultDirName={localappdata}\\Programs\\TranslateService", installer)
+        self.assertIn("MinVersion=10.0.18362", installer)
+
+    def test_both_windows_executables_embed_utf8_manifest(self):
+        spec = ast.parse((PACKAGING / "TranslateService.spec").read_text())
+        executables = [
+            node for node in ast.walk(spec)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "EXE"
+        ]
+        self.assertEqual(len(executables), 2)
+        for executable in executables:
+            manifest = next(keyword.value for keyword in executable.keywords if keyword.arg == "manifest")
+            expression = compile(ast.Expression(manifest), "manifest", "eval")
+            for is_mac in (True, False):
+                with self.subTest(is_mac=is_mac):
+                    self.assertEqual(
+                        eval(expression, {"ROOT": PACKAGING.parent, "IS_MAC": is_mac}),
+                        None if is_mac else str(PACKAGING / "windows.manifest"),
+                    )
+
     def test_managed_pyav_download_reuses_verified_retry_and_cache(self):
         import urllib.error
         import ffmpeg_source
