@@ -61,6 +61,19 @@ def configure_runtime() -> None:
         if not binary.is_file():
             raise FileNotFoundError(f"同梱の動画処理ツールが見つかりません。アプリを再インストールしてください: {binary}")
     os.environ["PATH"] = str(binary_directory) + os.pathsep + os.environ.get("PATH", "")
+    espeak_data = resource_root() / "piper" / "espeak-ng-data"
+    missing = [
+        name for name in ("phontab", "phondata", "phonindex")
+        if not (espeak_data / name).is_file()
+    ]
+    if not (espeak_data / "voices").is_dir():
+        missing.append("voices/")
+    if missing:
+        raise FileNotFoundError(
+            f"同梱のPiper eSpeak-NGデータが不完全です: {espeak_data} "
+            f"(missing: {', '.join(missing)})"
+        )
+    os.environ["ESPEAK_DATA_PATH"] = str(espeak_data)
     configure_tls_trust()
 
 
