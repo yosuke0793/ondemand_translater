@@ -317,6 +317,9 @@ version 1903 or later; the supported user platform remains Windows 11 x64.
 Windows CI installs into a path containing Japanese characters and spaces, then
 runs the installed bundle verification, including actual synthesis with both
 Piper voices. Keep `PrivilegesRequired=lowest` and the per-user install location.
+The Windows packaging CLI also uses UTF-8 for stdout/stderr and decodes captured
+text commands as UTF-8, so logging these paths does not depend on the CI console's
+legacy code page.
 On macOS, `Contents/Frameworks` and `Contents/Resources` may expose the same
 data directory through a symlink. Verification counts resolved directories,
 accepting these aliases while still rejecting multiple distinct data directories.

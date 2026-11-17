@@ -53,6 +53,8 @@ def native_target() -> str:
 
 
 def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
+    if kwargs.get("text") or kwargs.get("universal_newlines"):
+        kwargs.setdefault("encoding", "utf-8")
     print("+", " ".join(map(str, command)), flush=True)
     try:
         return subprocess.run(list(map(str, command)), check=True, **kwargs)
@@ -624,6 +626,10 @@ def build(target: str) -> None:
 
 
 def main() -> None:
+    if sys.platform == "win32":
+        for stream in (sys.stdout, sys.stderr):
+            if stream is not None:
+                stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("validate", "stage-ffmpeg", "build", "verify"))
     parser.add_argument("--expected-tag")

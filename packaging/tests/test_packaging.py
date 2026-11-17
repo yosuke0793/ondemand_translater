@@ -926,6 +926,42 @@ cmake() {
         self.assertIn("partial help", output.getvalue())
         self.assertIn("UnicodeEncodeError", output.getvalue())
 
+    def test_windows_packaging_cli_logs_unicode_paths_to_legacy_streams(self):
+        stdout_bytes = io.BytesIO()
+        stderr_bytes = io.BytesIO()
+        stdout = io.TextIOWrapper(stdout_bytes, encoding="cp1252")
+        stderr = io.TextIOWrapper(stderr_bytes, encoding="cp1252")
+        command = ["C:/installed 日本語/ffmpeg.exe", "-version"]
+        error = subprocess.CalledProcessError(
+            1, command, output="日本語 stdout", stderr="日本語 stderr",
+        )
+        with patch.object(sys, "platform", "win32"), \
+                patch.object(sys, "argv", ["build.py", "validate"]), \
+                patch.object(sys, "stdout", stdout), patch.object(sys, "stderr", stderr), \
+                patch.object(build, "version", return_value="1.2.3"), \
+                patch.object(build, "verify_source_hygiene"), \
+                patch.object(build.subprocess, "run", side_effect=error):
+            build.main()
+            with self.assertRaises(subprocess.CalledProcessError):
+                build.run(command, capture_output=True, text=True)
+            stdout.flush()
+            stderr.flush()
+            self.assertEqual(stdout.encoding, "utf-8")
+            self.assertEqual(stderr.encoding, "utf-8")
+            self.assertIn(command[0], stdout_bytes.getvalue().decode("utf-8"))
+            self.assertIn(error.stderr, stderr_bytes.getvalue().decode("utf-8"))
+
+    def test_packaging_text_commands_decode_utf8_without_changing_binary_output(self):
+        for options, expected in (
+            ({"text": True}, {"text": True, "encoding": "utf-8"}),
+            ({"universal_newlines": True}, {"universal_newlines": True, "encoding": "utf-8"}),
+            ({"text": True, "encoding": "ascii"}, {"text": True, "encoding": "ascii"}),
+            ({}, {}),
+        ):
+            with self.subTest(options=options), patch.object(build.subprocess, "run") as run:
+                build.run(["ffmpeg", "-version"], **options)
+                run.assert_called_once_with(["ffmpeg", "-version"], check=True, **expected)
+
     def test_version_and_tag_validation(self):
         self.assertEqual(build.version("v" + build.version()), build.version())
         with self.assertRaises(ValueError):
