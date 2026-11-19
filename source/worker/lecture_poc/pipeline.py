@@ -17,6 +17,7 @@ from .ffmpeg_filters import escape_filter_value
 from .jp_cleaner import clean_jp_srt
 from .srt_utils import (
     SRTBlock,
+    SRTEntry,
     extract_srt_entries,
     format_timestamp,
     parse_srt_block,
@@ -120,6 +121,7 @@ GEMINI_BATCH_MAX_TEXTS_DEFAULT = 120
 GEMINI_BATCH_MAX_CHARS_DEFAULT = 48_000
 GEMINI_ONE_SHOT_MAX_TEXTS_DEFAULT = 100
 TTS_MIX_BATCH_SIZE = 32
+TTS_MAX_TEMPO = 2.0
 
 
 def read_positive_int_env(name: str, default: int) -> int:
@@ -191,17 +193,18 @@ def log_pipeline(message: str) -> None:
             f.write(line + "\n")
 
 
-def run_pipeline_stage(stage_name: str, func, *args) -> None:
+def run_pipeline_stage(stage_name: str, func, *args) -> bool | None:
     started_at = perf_counter()
     log_pipeline(f"START {stage_name}")
     try:
-        func(*args)
+        result = func(*args)
     except Exception:
         elapsed = perf_counter() - started_at
         log_pipeline(f"FAIL  {stage_name} ({elapsed:.1f}s)")
         raise
     elapsed = perf_counter() - started_at
     log_pipeline(f"DONE  {stage_name} ({elapsed:.1f}s)")
+    return result
 
 
 def run_pipeline(config: PipelineConfig) -> None:
@@ -269,7 +272,7 @@ def run_pipeline(config: PipelineConfig) -> None:
     ):
         generate_force = True
 
-    run_pipeline_stage(
+    audio_regenerated = run_pipeline_stage(
         "generate_en_mp3",
         generate_en_mp3,
         en_srt,
@@ -315,7 +318,8 @@ def run_pipeline(config: PipelineConfig) -> None:
         )
         mux_input_video = overlay_video
 
-    run_pipeline_stage("mux_final_video", mux_final_video, mux_input_video, en_mp3, final_mp4, config.force)
+    final_force = config.force or audio_regenerated is True
+    run_pipeline_stage("mux_final_video", mux_final_video, mux_input_video, en_mp3, final_mp4, final_force)
 
     if config.burn_subs:
         run_pipeline_stage(
@@ -326,7 +330,7 @@ def run_pipeline(config: PipelineConfig) -> None:
             final_sub_mp4,
             config.burn_subs_in_band,
             config.burn_subs_band_ratio,
-            config.force,
+            final_force,
         )
     elif config.embed_subs:
         run_pipeline_stage(
@@ -340,7 +344,7 @@ def run_pipeline(config: PipelineConfig) -> None:
             final_sub_mp4,
             config.burn_subs_in_band,
             config.burn_subs_band_ratio,
-            config.force,
+            final_force,
         )
 
     log_pipeline("COMPLETE all stages finished")
@@ -432,7 +436,8 @@ def build_en_mp3_metadata(
     jp_srt_text = jp_reference_srt.read_text(encoding="utf-8")
     input_stat = input_video.stat()
     return {
-        "tts_pipeline_version": "2",
+        "tts_pipeline_version": "3",
+        "tts_max_tempo": str(TTS_MAX_TEMPO),
         "tts_backend": tts_backend,
         "voice": voice,
         "tts_volume": tts_volume,
@@ -497,6 +502,12 @@ def generate_tts_mp3_from_segments(
     raw_entries = extract_srt_entries(en_srt.read_text(encoding="utf-8"))
     entries = [entry for entry in raw_entries if entry.text.strip()]
     video_duration = get_media_duration_seconds(input_video)
+    start_times_ms = build_tts_start_times(entries, tts_timing_mode)
+    slot_durations = (
+        build_tts_time_slots(entries, start_times_ms, video_duration)
+        if tts_timing_mode == "no-overlap"
+        else None
+    )
 
     if not entries:
         generate_silence_mp3(en_mp3, video_duration)
@@ -571,43 +582,44 @@ def generate_tts_mp3_from_segments(
                     text_key = future_by_text[future]
                     segment_duration_by_text[text_key] = future.result()
 
-        start_times_ms, adjusted_count, max_shift_seconds = build_tts_start_times(
-            entries,
-            segment_duration_by_text,
-            tts_timing_mode,
-        )
-        if tts_timing_mode == "no-overlap":
-            print(
-                "[音声合成] "
-                f"timing_mode=no-overlap, adjusted={adjusted_count}, max_shift={max_shift_seconds:.2f}s"
-            )
+        segment_paths = [segment_path_by_text[entry.text.strip()] for entry in entries]
+        segment_durations = [segment_duration_by_text[entry.text.strip()] for entry in entries]
+        if slot_durations is not None:
+            compressed_count = 0
+            max_tempo = 1.0
+            for index, (entry, duration, available) in enumerate(zip(entries, segment_durations, slot_durations)):
+                if not math.isfinite(duration) or duration <= 0:
+                    raise PipelineStepError(
+                        "generate_en_mp3", f"字幕 #{entry.index}: 音声の長さが不正です: {duration}"
+                    )
+                if duration <= available:
+                    continue
+                fitted_path = segment_dir / f"segment_fitted_{index + 1:05d}.wav"
+                fitted_duration, tempo = fit_tts_segment(
+                    segment_paths[index], fitted_path, duration, available, entry.index,
+                )
+                segment_paths[index] = fitted_path
+                segment_durations[index] = fitted_duration
+                compressed_count += 1
+                max_tempo = max(max_tempo, tempo)
             log_pipeline(
-                f"INFO  tts_timing adjusted={adjusted_count}, max_shift={max_shift_seconds:.2f}s"
+                f"INFO  tts_timing mode=no-overlap, compressed={compressed_count}, "
+                f"max_tempo={max_tempo:.6f}, max_shift=0.00s"
             )
 
+        aligned_srt_text = None
         if (
             tts_timing_mode == "no-overlap"
             and subs_sync_mode == "tts-aligned"
             and aligned_srt_output is not None
         ):
-            aligned_srt_text, first_shift_seconds, last_shift_seconds = build_aligned_srt_text(
+            aligned_srt_text = build_aligned_srt_text(
                 en_srt.read_text(encoding="utf-8"),
                 entries,
                 start_times_ms,
-                segment_duration_by_text,
+                segment_durations,
             )
-            aligned_srt_output.write_text(aligned_srt_text, encoding="utf-8")
-            print(f"[音声合成] 同期字幕を作成: {aligned_srt_output}")
-            log_pipeline(
-                "INFO  aligned_subtitles written "
-                f"path={aligned_srt_output.name}, first_shift={first_shift_seconds:.2f}s, "
-                f"last_shift={last_shift_seconds:.2f}s"
-            )
-
-        segment_files: list[tuple[int, Path]] = []
-        for entry, start_ms in zip(entries, start_times_ms):
-            text_key = entry.text.strip()
-            segment_files.append((start_ms, segment_path_by_text[text_key]))
+        segment_files = list(zip(start_times_ms, segment_paths))
 
         layers: list[Path] = []
         for batch_index, offset in enumerate(range(0, len(segment_files), TTS_MIX_BATCH_SIZE)):
@@ -633,7 +645,12 @@ def generate_tts_mp3_from_segments(
             layers = next_layers
             level += 1
 
-        _run_tts_mix_layer(layers, en_mp3, video_duration, volume=gain, codec="mp3")
+        generated_mp3 = segment_dir / "en.mp3"
+        _run_tts_mix_layer(layers, generated_mp3, video_duration, volume=gain, codec="mp3")
+        generated_mp3.replace(en_mp3)
+        if aligned_srt_text is not None and aligned_srt_output is not None:
+            aligned_srt_output.write_text(aligned_srt_text, encoding="utf-8")
+            log_pipeline(f"INFO  aligned_subtitles written path={aligned_srt_output.name}")
     finally:
         shutil.rmtree(segment_dir, ignore_errors=True)
 
@@ -1036,62 +1053,104 @@ def resolve_tts_workers(tts_workers: int) -> int:
 
 
 def build_tts_start_times(
-    entries,
-    segment_duration_by_text: dict[str, float],
+    entries: list[SRTEntry],
     tts_timing_mode: str,
-) -> tuple[list[int], int, float]:
+) -> list[int]:
     if tts_timing_mode not in {"strict", "no-overlap"}:
         raise PipelineStepError("generate_en_mp3", f"Unknown tts timing mode: {tts_timing_mode}")
 
     start_times_ms: list[int] = []
-    previous_end_seconds = 0.0
-    adjusted_count = 0
-    max_shift_seconds = 0.0
-
     for entry in entries:
-        text_key = entry.text.strip()
-        segment_duration = segment_duration_by_text.get(text_key, 0.0)
-        original_start = max(0.0, entry.start_seconds)
-        scheduled_start = original_start
+        if not math.isfinite(entry.start_seconds) or entry.start_seconds < 0:
+            raise PipelineStepError("generate_en_mp3", f"字幕 #{entry.index}: 開始時刻が不正です。")
+        start_times_ms.append(int(round(entry.start_seconds * 1000.0)))
+    return start_times_ms
 
-        if tts_timing_mode == "no-overlap" and scheduled_start < previous_end_seconds:
-            scheduled_start = previous_end_seconds
 
-        shift_seconds = max(0.0, scheduled_start - original_start)
-        if shift_seconds > 0.0:
-            adjusted_count += 1
-            max_shift_seconds = max(max_shift_seconds, shift_seconds)
-
-        start_ms = max(
-            0,
-            math.ceil(scheduled_start * 1000.0)
-            if tts_timing_mode == "no-overlap"
-            else int(round(scheduled_start * 1000.0)),
+def build_tts_time_slots(
+    entries: list[SRTEntry], start_times_ms: list[int], video_duration: float,
+) -> list[float]:
+    if not math.isfinite(video_duration) or video_duration <= 0:
+        raise PipelineStepError("generate_en_mp3", "動画の長さが不正です。")
+    video_end_ms = math.floor(video_duration * 1000.0)
+    slots: list[float] = []
+    for index, (entry, start_ms) in enumerate(zip(entries, start_times_ms)):
+        end_ms = (
+            min(start_times_ms[index + 1], video_end_ms)
+            if index + 1 < len(start_times_ms)
+            else video_end_ms
         )
-        start_times_ms.append(start_ms)
-        previous_end_seconds = max(previous_end_seconds, start_ms / 1000.0 + segment_duration)
+        if end_ms <= start_ms:
+            raise PipelineStepError(
+                "generate_en_mp3",
+                f"字幕 #{entry.index}: 音声の時間枠を確保できません "
+                f"({start_ms / 1000:.3f}s → {end_ms / 1000:.3f}s)。"
+                "開始時刻の重複・逆順・動画の範囲外を確認してください。",
+            )
+        slots.append((end_ms - start_ms) / 1000.0)
+    return slots
 
-    return start_times_ms, adjusted_count, max_shift_seconds
+
+def fit_tts_segment(
+    source: Path, target: Path, duration: float, available: float, subtitle_index: int,
+) -> tuple[float, float]:
+    required_tempo = duration / available
+    detail = (
+        f"字幕 #{subtitle_index}: 音声長={duration:.3f}s、時間枠={available:.3f}s、"
+        f"必要倍率={required_tempo:.6f}、上限={TTS_MAX_TEMPO:.1f}倍。"
+    )
+    if duration > available * TTS_MAX_TEMPO:
+        raise PipelineStepError(
+            "generate_en_mp3", detail + " en.srt の該当英文または区切り・時刻を見直してください。",
+        )
+    tempo = required_tempo
+    for _ in range(3):
+        try:
+            run_command(
+                [
+                    "ffmpeg", "-y", "-i", str(source), "-vn",
+                    "-af", f"atempo={tempo:.12f}", "-ar", "24000", "-ac", "1",
+                    "-c:a", "pcm_s16le", str(target),
+                ],
+                "generate_en_mp3",
+            )
+            fitted_duration = get_media_duration_seconds(target)
+        except PipelineStepError as exc:
+            raise PipelineStepError(
+                "generate_en_mp3", detail + " 局所圧縮または音声長の確認に失敗しました。",
+            ) from exc
+        if not math.isfinite(fitted_duration) or fitted_duration <= 0:
+            raise PipelineStepError("generate_en_mp3", detail + " 圧縮後の音声長が不正です。")
+        if fitted_duration <= available:
+            log_pipeline(
+                f"INFO  tts_compressed subtitle={subtitle_index}, tempo={tempo:.6f}, "
+                f"duration={duration:.6f}s -> {fitted_duration:.6f}s, slot={available:.6f}s"
+            )
+            return fitted_duration, tempo
+        if tempo >= TTS_MAX_TEMPO:
+            break
+        # atempo output length is approximate; refine from the original WAV, never trim speech.
+        tempo = min(TTS_MAX_TEMPO, tempo * (fitted_duration + 0.001) / available)
+    raise PipelineStepError(
+        "generate_en_mp3",
+        detail + " 上限内の圧縮では実測音声長が収まりません。en.srt の該当箇所を見直してください。",
+    )
 
 
 def build_aligned_srt_text(
     source_srt_text: str,
-    entries,
+    entries: list[SRTEntry],
     start_times_ms: list[int],
-    segment_duration_by_text: dict[str, float],
-    min_duration_seconds: float = 0.20,
-    min_gap_seconds: float = 0.0,
-) -> tuple[str, float, float]:
-    if len(entries) != len(start_times_ms):
+    segment_durations: list[float],
+) -> str:
+    if not (len(entries) == len(start_times_ms) == len(segment_durations)):
         raise PipelineStepError(
             "generate_en_mp3",
-            "aligned subtitle generation failed: entries/start_times length mismatch",
+            "aligned subtitle generation failed: entries/start_times/durations length mismatch",
         )
 
     rendered_blocks: list[str] = []
     entry_index = 0
-    first_shift_seconds = 0.0
-    last_shift_seconds = 0.0
 
     for block_lines in split_srt_blocks(source_srt_text):
         block = parse_srt_block(block_lines)
@@ -1106,18 +1165,11 @@ def build_aligned_srt_text(
                 "aligned subtitle generation failed: source srt blocks mismatch",
             )
 
-        entry = entries[entry_index]
         start_seconds = max(0.0, start_times_ms[entry_index] / 1000.0)
-        segment_duration = max(min_duration_seconds, segment_duration_by_text.get(entry.text.strip(), 0.0))
-        end_seconds = max(start_seconds + min_duration_seconds, start_seconds + segment_duration)
+        end_seconds = start_seconds + segment_durations[entry_index]
         if entry_index + 1 < len(start_times_ms):
             next_start = start_times_ms[entry_index + 1] / 1000.0
-            end_seconds = max(start_seconds, min(end_seconds, next_start - min_gap_seconds))
-
-        shift_seconds = max(0.0, start_seconds - entry.start_seconds)
-        if entry_index == 0:
-            first_shift_seconds = shift_seconds
-        last_shift_seconds = shift_seconds
+            end_seconds = min(end_seconds, next_start)
 
         aligned_timecode = f"{format_timestamp(start_seconds)} --> {format_timestamp(end_seconds)}"
         rendered_blocks.append(render_srt_block(SRTBlock(block.index, aligned_timecode, block.text_lines)))
@@ -1129,7 +1181,7 @@ def build_aligned_srt_text(
             "aligned subtitle generation failed: not all entries were consumed",
         )
 
-    return "\n\n".join(rendered_blocks) + ("\n" if rendered_blocks else ""), first_shift_seconds, last_shift_seconds
+    return "\n\n".join(rendered_blocks) + ("\n" if rendered_blocks else "")
 
 
 def iter_transcription_chunks(
@@ -1991,7 +2043,7 @@ def generate_en_mp3(
     tts_backend: str,
     subs_sync_mode: str,
     aligned_srt_output: Path | None,
-) -> None:
+) -> bool:
     try:
         voice = validate_tts_settings(tts_backend, voice, tts_volume)
     except TTSError as exc:
@@ -2012,7 +2064,7 @@ def generate_en_mp3(
         subs_sync_mode,
     )
     if not should_regenerate_en_mp3(en_mp3, metadata_path, expected_metadata, input_video, force):
-        return
+        return False
 
     print(f"[音声合成] {en_mp3}")
     try:
@@ -2037,6 +2089,7 @@ def generate_en_mp3(
         raise PipelineStepError("generate_en_mp3", str(exc)) from None
 
     write_en_mp3_metadata(metadata_path, expected_metadata)
+    return True
 
 
 def mux_final_video(input_video: Path, en_mp3: Path, final_mp4: Path, force: bool) -> None:
