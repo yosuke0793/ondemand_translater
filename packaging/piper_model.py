@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import shutil
+import socket
 import sys
 import tempfile
+import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -15,6 +20,7 @@ PACKAGING = Path(__file__).resolve().parent
 MODEL_MANIFEST = PACKAGING / "piper_model.json"
 MODEL_STAGE = PACKAGING / ".work" / "piper-model"
 DEFAULT_VOICE = "en_US-ljspeech-medium"
+DOWNLOAD_ATTEMPTS = 3
 
 
 class PiperModelError(RuntimeError):
@@ -81,14 +87,53 @@ def _download(url: str, destination: Path, expected_hash: str) -> None:
         partial.unlink(missing_ok=True)
 
 
+def _download_verified(url: str, destination: Path, expected_hash: str) -> None:
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            _download(url, destination, expected_hash)
+            return
+        except (urllib.error.URLError, TimeoutError, ConnectionError,
+                http.client.HTTPException) as exc:
+            if isinstance(exc, urllib.error.HTTPError):
+                host = urllib.parse.urlsplit(exc.url).hostname
+                detail = f"HTTP {exc.code} from {host}"
+                retryable = exc.code in (408, 429, 500, 502, 503, 504)
+                exc.close()
+            else:
+                host = urllib.parse.urlsplit(url).hostname
+                reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+                detail = f"{type(reason).__name__} contacting {host}"
+                if isinstance(reason, OSError) and reason.errno is not None:
+                    detail += f" (errno {reason.errno})"
+                retryable = isinstance(
+                    reason, (socket.gaierror, TimeoutError, ConnectionError, http.client.IncompleteRead),
+                )
+            message = (
+                f"Could not download the pinned Piper asset {destination.name}: "
+                f"{detail} (attempt {attempt}/{DOWNLOAD_ATTEMPTS})."
+            )
+            if not retryable or attempt == DOWNLOAD_ATTEMPTS:
+                raise PiperModelError(message) from None
+            delay = 5 * attempt
+            print(f"{message} Retrying in {delay}s.", file=sys.stderr, flush=True)
+            time.sleep(delay)
+
+
 def stage_model(destination: Path = MODEL_STAGE, voice: str | None = None) -> Path:
     """Stage all build voices, or only the selected source-runtime voice."""
     models = [voice_manifest(name) for name in
               (supported_voices() if voice is None else (voice,))]
-    destination.mkdir(parents=True, exist_ok=True)
-    for model in models:
-        _stage_voice(destination, model)
-    shutil.copy2(MODEL_MANIFEST, destination / "piper_model.json")
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+        for model in models:
+            _stage_voice(destination, model)
+        shutil.copy2(MODEL_MANIFEST, destination / "piper_model.json")
+    except OSError as exc:
+        errno = f", errno {exc.errno}" if exc.errno is not None else ""
+        raise PiperModelError(
+            f"Could not access the Piper model staging directory {destination} "
+            f"({type(exc).__name__}{errno}); check permissions and available disk space."
+        ) from None
     return destination
 
 
@@ -106,14 +151,9 @@ def _stage_voice(destination: Path, voice: dict) -> None:
             shutil.copy2(source, path)
             continue
         try:
-            _download(item.get("url", f"{base_url}/{item['name']}"), path, item["sha256"])
+            _download_verified(item.get("url", f"{base_url}/{item['name']}"), path, item["sha256"])
         except ValueError as exc:
             raise PiperModelError(str(exc)) from None
-        except OSError:
-            raise PiperModelError(
-                f"Could not download or write the pinned Piper asset {item['name']}; "
-                "check network access and cache permissions."
-            ) from None
 
 
 def default_model_cache(voice: str = DEFAULT_VOICE) -> Path:

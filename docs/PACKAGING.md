@@ -302,6 +302,15 @@ The release validator checks original source hashes, runtime/model provenance
 and matching manifest records, not just the outer archive checksum. The
 offline worker self-test synthesizes a short sentence into a nonempty WAV;
 model files alone are not proof that phonemization or inference works.
+
+The build stages the exact pinned Piper assets in `packaging/.work/piper-model`.
+If staging fails, check the asset name and HTTP status or network error type
+in the job log; HTTP errors show the responding host, without signed redirect
+URLs. Temporary network failures and selected transient HTTP responses are
+retried up to two times. Cache access errors are reported separately and
+should be checked for permissions or disk space. A SHA-256 mismatch is not
+retried or accepted, and the model revision and expected hashes stay pinned.
+
 The frozen bundle must also contain the top-level eSpeak-NG runtime files
 (`phontab`, `phondata`, and `phonindex`) plus the `voices` directory. Bundle
 verification checks these files directly so the build cannot pass by falling
