@@ -23,16 +23,16 @@ from lecture_poc.__main__ import build_parser, ensure_python_dependencies
 from lecture_poc.srt_utils import extract_srt_entries
 
 
-def wav_bytes(duration: float = 0.1, frequency: float = 440.0) -> bytes:
+def wav_bytes(duration: float = 0.1, frequency: float = 440.0, sample_rate: int = 24000) -> bytes:
     output = io.BytesIO()
     samples = [
-        int(3000 * math.sin(2 * math.pi * frequency * i / 24000))
-        for i in range(int(24000 * duration))
+        int(3000 * math.sin(2 * math.pi * frequency * i / sample_rate))
+        for i in range(int(sample_rate * duration))
     ]
     with wave.open(output, "wb") as wav_file:
         wav_file.setnchannels(1)
         wav_file.setsampwidth(2)
-        wav_file.setframerate(24000)
+        wav_file.setframerate(sample_rate)
         wav_file.writeframes(struct.pack(f"<{len(samples)}h", *samples))
     return output.getvalue()
 
@@ -487,12 +487,40 @@ class TimingTests(unittest.TestCase):
         with patch.object(pipeline, "run_command") as run, patch.object(
             pipeline, "get_media_duration_seconds", return_value=1.1,
         ), self.assertRaisesRegex(pipeline.PipelineStepError, "実測音声長が収まりません"):
-            pipeline.fit_tts_segment(source, target, 1.99, 1.0, 1)
-        self.assertLessEqual(run.call_count, 3)
+            pipeline.fit_tts_segment(source, target, 1.25, 1.0, 1)
+        self.assertGreater(run.call_count, 3)
+        self.assertLessEqual(run.call_count, 11)
+        self.assertIn("atempo=2.000000000000", run.call_args.args[0])
         self.assertTrue(all(
             float(call.args[0][call.args[0].index("-af") + 1].split("=")[1]) <= 2.0
             for call in run.call_args_list
         ))
+
+    def test_atempo_plateau_can_continue_past_three_attempts(self) -> None:
+        with patch.object(pipeline, "run_command") as run, patch.object(
+            pipeline, "get_media_duration_seconds",
+            side_effect=[11.003375, 11.000958, 11.001208, 10.999],
+        ):
+            duration, tempo = pipeline.fit_tts_segment(
+                Path("original.wav"), Path("fitted.wav"), 12.782585, 11.0, 1,
+            )
+        self.assertEqual(duration, 10.999)
+        self.assertEqual(run.call_count, 4)
+        self.assertLess(tempo, 1.18)
+        self.assertTrue(all(
+            call.args[0][call.args[0].index("-i") + 1] == "original.wav"
+            and "-t" not in call.args[0] for call in run.call_args_list
+        ))
+
+    def test_persistent_tiny_overrun_reaches_cap_with_bounded_attempts(self) -> None:
+        with patch.object(pipeline, "run_command") as run, patch.object(
+            pipeline, "get_media_duration_seconds", return_value=1.000001,
+        ), self.assertRaisesRegex(
+            pipeline.PipelineStepError, "最終倍率=2.000000、最終音声長=1.000001s",
+        ):
+            pipeline.fit_tts_segment(Path("original.wav"), Path("fitted.wav"), 1.000001, 1.0, 1)
+        self.assertLessEqual(run.call_count, 11)
+        self.assertIn("atempo=2.000000000000", run.call_args.args[0])
 
     def test_invalid_compressed_duration_is_rejected(self) -> None:
         for duration in (0, float("nan"), float("inf")):
@@ -546,6 +574,18 @@ class AudioIntegrationTests(ScratchTest):
         quiet = patch.object(pipeline, "run_command", side_effect=quiet_command)
         quiet.start()
         self.addCleanup(quiet.stop)
+
+    def test_piper_rate_waveform_fits_after_atempo_length_plateau(self) -> None:
+        source = self.directory / "piper-rate.wav"
+        target = self.directory / "fitted.wav"
+        source.write_bytes(wav_bytes(281856 / 22050, 57, sample_rate=22050))
+        duration = pipeline.get_media_duration_seconds(source)
+        self.assertAlmostEqual(duration / 11.0, 1.162053, places=6)
+        fitted_duration, tempo = pipeline.fit_tts_segment(source, target, duration, 11.0, 1)
+        self.assertLessEqual(fitted_duration, 11.0)
+        self.assertEqual(pipeline.get_media_duration_seconds(target), fitted_duration)
+        self.assertGreaterEqual(tempo, duration / 11.0)
+        self.assertLessEqual(tempo, 2.0)
 
     def test_shared_mixer_alignment_volume_workers_and_cache(self) -> None:
         source = self.directory / "en.srt"

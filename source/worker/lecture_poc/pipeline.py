@@ -1104,7 +1104,8 @@ def fit_tts_segment(
             "generate_en_mp3", detail + " en.srt の該当英文または区切り・時刻を見直してください。",
         )
     tempo = required_tempo
-    for _ in range(3):
+    minimum_step = 0.001
+    while True:
         try:
             run_command(
                 [
@@ -1127,14 +1128,19 @@ def fit_tts_segment(
                 f"duration={duration:.6f}s -> {fitted_duration:.6f}s, slot={available:.6f}s"
             )
             return fitted_duration, tempo
+        log_pipeline(
+            f"INFO  tts_fit_overrun subtitle={subtitle_index}, tempo={tempo:.6f}, "
+            f"measured={fitted_duration:.6f}s, slot={available:.6f}s"
+        )
         if tempo >= TTS_MAX_TEMPO:
-            break
-        # atempo output length is approximate; refine from the original WAV, never trim speech.
-        tempo = min(TTS_MAX_TEMPO, tempo * (fitted_duration + 0.001) / available)
-    raise PipelineStepError(
-        "generate_en_mp3",
-        detail + " 上限内の圧縮では実測音声長が収まりません。en.srt の該当箇所を見直してください。",
-    )
+            raise PipelineStepError(
+                "generate_en_mp3",
+                detail + f" 最終倍率={tempo:.6f}、最終音声長={fitted_duration:.6f}sでも"
+                "実測音声長が収まりません。en.srt の該当箇所を見直してください。",
+            )
+        # atempo alignment can plateau or regress; grow the step until a fit or the cap is tested.
+        tempo = min(TTS_MAX_TEMPO, max(tempo * fitted_duration / available, tempo + minimum_step))
+        minimum_step *= 2
 
 
 def build_aligned_srt_text(
