@@ -1441,13 +1441,15 @@ def fetch_available_gemini_models(gemini_api_key: str) -> set[str] | None:
         discovered: set[str] = set()
         page_token: str | None = None
         for _ in range(5):
-            params: dict[str, str | int] = {"key": gemini_api_key, "pageSize": 100}
+            params: dict[str, str | int] = {"pageSize": 100}
             if page_token:
                 params["pageToken"] = page_token
 
             response = requests.get(
                 "https://generativelanguage.googleapis.com/v1beta/models",
                 params=params,
+                headers={"x-goog-api-key": gemini_api_key},
+                allow_redirects=False,
                 timeout=15,
             )
             response.raise_for_status()
@@ -1553,7 +1555,6 @@ def translate_lines_with_gemini(
     )
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent"
-    params = {"key": gemini_api_key}
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -1565,7 +1566,13 @@ def translate_lines_with_gemini(
     last_error: Exception | None = None
     for attempt in range(1, 6):
         try:
-            response = requests.post(url, params=params, json=payload, timeout=60)
+            response = requests.post(
+                url,
+                json=payload,
+                headers={"x-goog-api-key": gemini_api_key},
+                allow_redirects=False,
+                timeout=60,
+            )
             response.raise_for_status()
             data = response.json()
 

@@ -45,6 +45,39 @@ class ScratchTest(unittest.TestCase):
 
 
 class SettingsTests(unittest.TestCase):
+    def test_gemini_translation_sends_api_key_in_header_without_redirects(self) -> None:
+        class Response:
+            def raise_for_status(self) -> None:
+                pass
+
+            def json(self) -> dict:
+                return {"candidates": [{"content": {"parts": [{
+                    "text": json.dumps({"translations": [{"id": 1, "text": "Hello"}]}),
+                }]}}]}
+
+        request = Mock(return_value=Response())
+        with patch.dict(sys.modules, {"requests": SimpleNamespace(post=request)}):
+            result = pipeline.translate_lines_with_gemini(["こんにちは"], "test-only-key", "test-model")
+
+        self.assertEqual(result, {"こんにちは": "Hello"})
+        self.assertNotIn("params", request.call_args.kwargs)
+        self.assertEqual(request.call_args.kwargs["headers"], {"x-goog-api-key": "test-only-key"})
+        self.assertFalse(request.call_args.kwargs["allow_redirects"])
+
+    def test_gemini_model_discovery_sends_api_key_in_header_without_redirects(self) -> None:
+        response = Mock()
+        response.status_code = 200
+        response.json.return_value = {"models": []}
+        request = Mock(return_value=response)
+        with patch.object(pipeline, "_GEMINI_AVAILABLE_MODELS_CACHE", None), \
+                patch.dict(os.environ, {"GEMINI_DISCOVER_MODELS": "true"}), \
+                patch.dict(sys.modules, {"requests": SimpleNamespace(get=request)}):
+            self.assertIsNone(pipeline.fetch_available_gemini_models("test-only-key"))
+
+        self.assertEqual(request.call_args.kwargs["params"], {"pageSize": 100})
+        self.assertEqual(request.call_args.kwargs["headers"], {"x-goog-api-key": "test-only-key"})
+        self.assertFalse(request.call_args.kwargs["allow_redirects"])
+
     def test_gemini_invalid_json_response_retries_smaller_batches(self) -> None:
         class Response:
             def __init__(self, text: str):
