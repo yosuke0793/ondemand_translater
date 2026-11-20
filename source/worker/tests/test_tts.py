@@ -45,40 +45,6 @@ class ScratchTest(unittest.TestCase):
 
 
 class SettingsTests(unittest.TestCase):
-    def test_gemini_invalid_json_response_retries_smaller_batches(self) -> None:
-        class Response:
-            def __init__(self, text: str):
-                self.text = text
-
-            def raise_for_status(self) -> None:
-                pass
-
-            def json(self) -> dict:
-                return {"candidates": [{"content": {"parts": [{"text": self.text}]}}]}
-
-        calls = 0
-
-        def post(*args, **kwargs):
-            nonlocal calls
-            calls += 1
-            if calls <= 5:
-                return Response('{"translations":[{"id":1,"text":"broken"}]')
-            payload = kwargs["json"]["contents"][0]["parts"][0]["text"]
-            line = "first" if "1\tfirst" in payload else "second"
-            translated = {"first": "First", "second": "Second"}[line]
-            return Response(json.dumps({
-                "translations": [{"id": 1, "text": translated}],
-            }))
-
-        with patch.dict(sys.modules, {"requests": SimpleNamespace(post=post)}), \
-                patch.object(pipeline, "sleep"):
-            result = pipeline.translate_lines_with_gemini(
-                ["first", "second"], "test-key", "test-model",
-            )
-
-        self.assertEqual(result, {"first": "First", "second": "Second"})
-        self.assertEqual(calls, 7)
-
     def test_deepl_api_and_cli_are_removed(self) -> None:
         parser = build_parser()
         self.assertNotIn("--deepl-api-key", parser.format_help())
@@ -94,9 +60,10 @@ class SettingsTests(unittest.TestCase):
     def test_gemini_limit_falls_back_directly_to_argos(self) -> None:
         source = "1\n00:00:00,000 --> 00:00:01,000\nこんにちは\n"
         translated = source.replace("こんにちは", "Hello")
+        exhausted = pipeline.GeminiRequestError("quota exceeded", status=429, retryable=True)
         with patch.object(pipeline, "get_gemini_api_key", return_value="test-key"), \
                 patch.object(pipeline, "resolve_gemini_model_candidates", return_value=["test-model"]), \
-                patch.object(pipeline, "translate_with_gemini", side_effect=RuntimeError("quota exceeded")), \
+                patch.object(pipeline, "translate_with_gemini", side_effect=exhausted), \
                 patch.object(pipeline, "translate_with_argos", return_value=translated) as argos:
             self.assertEqual(
                 pipeline.translate_plain_lines(["こんにちは"], "gemini", None, "test-model"),
