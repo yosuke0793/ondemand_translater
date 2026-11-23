@@ -1274,8 +1274,11 @@ cmake() {
         }):
             self.assertEqual(piper_model.resolve_model_dir(bundle_root), bundle_root / "piper-model")
             with patch.object(piper_model, "MODEL_STAGE", PACKAGING / ".work" / "missing-piper-model"), \
-                 patch.object(piper_model, "default_model_cache", return_value=cache_dir):
+                 patch.object(piper_model, "default_model_cache", return_value=cache_dir), \
+                 patch.object(piper_model, "stage_model", return_value=cache_dir) as stage_model:
                 self.assertEqual(piper_model.resolve_model_dir(), cache_dir)
+                stage_model.assert_called_once_with(cache_dir, voice=piper_model.DEFAULT_VOICE)
+                stage_model.reset_mock()
                 with patch.object(piper_model, "_is_valid_model_dir", return_value=False), \
                      patch.object(piper_model, "stage_model", return_value=cache_dir) as stage_model:
                     self.assertEqual(piper_model.resolve_model_dir(), cache_dir)
