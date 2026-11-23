@@ -8,7 +8,9 @@ import csv
 import json
 import os
 import multiprocessing
+import queue
 import sys
+import threading
 import tkinter as tk
 import webbrowser
 from pathlib import Path
@@ -17,6 +19,7 @@ from tkinter import filedialog, messagebox, ttk
 from local_job_manager import LocalJobManager, default_data_dir
 from app_runtime import app_version, bundle_self_test, configure_runtime, resource_root, usage_terms_text
 from credential_store import API_VARIABLES, CredentialError, CredentialStore, validate_speech_region
+from lecture_poc.gemini import DEFAULT_GEMINI_MODEL, request_translations
 
 
 VOICE_OPTIONS = {
@@ -41,6 +44,25 @@ PIPER_VOICE_OPTIONS = {
 TTS_BACKENDS = {"Piper（ローカル・TTS外部送信なし）": "piper", "Azure AI Speech（公式API・従量課金）": "azure"}
 DEFAULT_GLOSSARY_PATH = resource_root() / "lecture_poc" / "prompts" / "engineering_terms.csv"
 CUSTOM_GLOSSARY_FILENAME = "engineering_terms_custom.csv"
+
+
+def test_gemini_connection(api_key: str) -> tuple[bool, str]:
+    try:
+        request_translations(
+            ["こんにちは"], api_key, DEFAULT_GEMINI_MODEL, timeout=20, require_text=True,
+        )
+    except Exception as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status in (400, 401, 403):
+            detail = f"HTTP {status}: APIキー、利用権限、プロジェクト設定を確認してください。"
+        elif status == 429:
+            detail = "HTTP 429: 利用上限、料金設定、時間あたりの制限を確認してください。"
+        elif isinstance(status, int):
+            detail = f"HTTP {status}: モデルの利用可否とサービスの状態を確認してください。"
+        else:
+            detail = "通信または応答の確認に失敗しました。ネットワーク接続とサービスの状態を確認してください。"
+        return False, detail
+    return True, f"Geminiへのテスト翻訳に成功しました（モデル: {DEFAULT_GEMINI_MODEL}）。"
 
 
 def load_preferences(path: Path) -> dict[str, str]:
@@ -487,6 +509,7 @@ class StandaloneApp:
             "通常の設定ファイル・ジョブ・ログには保存しません。\n"
             "環境変数にキーがある場合は環境変数が優先されます。\n"
             "Gemini選択時はGoogleへ翻訳テキスト、Azure選択時はMicrosoftへ英語字幕を送信します。\n"
+            "接続テストは固定の短い文章をGoogleへ送信し、利用料金が発生する場合があります。\n"
             "Piperの音声生成にはAPIキー不要です。料金・利用条件を確認してください。",
             wraplength=560,
         ).grid(row=0, column=0, columnspan=4, sticky="w", padx=12, pady=12)
@@ -545,6 +568,48 @@ class StandaloneApp:
             statuses[provider] = tk.StringVar()
             ttk.Label(window, textvariable=statuses[provider]).grid(row=row + 1, column=1, columnspan=3, sticky="w", padx=6)
             refresh_status(provider)
+
+        test_results: queue.Queue[tuple[bool, str]] = queue.Queue()
+
+        def test_connection() -> None:
+            if entries["gemini"].get().strip():
+                messagebox.showinfo(
+                    "Gemini接続テスト",
+                    "入力中のキーを保存するか入力欄を消してからテストしてください。"
+                    "テストには実際のジョブと同じキーを使用します。",
+                    parent=window,
+                )
+                return
+            try:
+                api_key = self.credentials.worker_credentials("gemini")["GEMINI_API_KEY"]
+            except CredentialError as exc:
+                messagebox.showerror("Gemini接続テスト", str(exc), parent=window)
+                return
+            source = "環境変数" if os.environ.get("GEMINI_API_KEY", "").strip() else "OSの保存先"
+            test_button.configure(state=tk.DISABLED)
+            test_status.set(f"テスト中（{source}のキー）...")
+
+            def run_test() -> None:
+                test_results.put(test_gemini_connection(api_key))
+
+            def show_result() -> None:
+                try:
+                    success, detail = test_results.get_nowait()
+                except queue.Empty:
+                    window.after(100, show_result)
+                    return
+                test_button.configure(state=tk.NORMAL)
+                test_status.set(f"テスト開始時の{source}のキー: " + ("成功" if success else "失敗"))
+                show_message = messagebox.showinfo if success else messagebox.showerror
+                show_message("Gemini接続テスト", detail, parent=window)
+
+            threading.Thread(target=run_test, daemon=True).start()
+            window.after(100, show_result)
+
+        test_button = ttk.Button(window, text="Gemini接続テスト", command=test_connection)
+        test_button.grid(row=2, column=4, padx=6)
+        test_status = tk.StringVar(value="")
+        ttk.Label(window, textvariable=test_status).grid(row=3, column=4, sticky="w", padx=6)
         next_row = 1 + len(API_VARIABLES) * 2
         ttk.Label(window, text="Azureリージョン").grid(row=next_row, column=0, padx=12, pady=6)
         region_entry = ttk.Entry(window, width=42)

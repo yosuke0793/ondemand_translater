@@ -14,6 +14,7 @@ from pathlib import Path
 from time import perf_counter, sleep
 
 from .ffmpeg_filters import escape_filter_value
+from .gemini import DEFAULT_GEMINI_MODEL, request_translations
 from .jp_cleaner import clean_jp_srt
 from .srt_utils import (
     SRTBlock,
@@ -53,7 +54,7 @@ class PipelineConfig:
     ollama_model: str = "qwen2.5:7b-instruct"
     translation_backend: str = "gemini"
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-3.1-flash-lite"
+    gemini_model: str = DEFAULT_GEMINI_MODEL
     burn_subs: bool = False
     embed_subs: bool = False
     embed_subs_container: str = "mp4"
@@ -1351,11 +1352,30 @@ def has_http_status(exc: BaseException, statuses: set[int]) -> bool:
     return False
 
 
-def build_exception_summary(exc: BaseException, *, response_text_limit: int = 400) -> str:
+def is_gemini_auth_error(exc: BaseException) -> bool:
+    if has_http_status(exc, {401, 403}):
+        return True
+    for item in iterate_exception_chain(exc):
+        response = getattr(item, "response", None)
+        if getattr(response, "status_code", None) == 400:
+            try:
+                error = response.json().get("error", {})
+                if any(detail.get("reason") == "API_KEY_INVALID" for detail in error.get("details", [])):
+                    return True
+            except (ValueError, AttributeError, TypeError):
+                continue
+    return False
+
+
+def build_exception_summary(
+    exc: BaseException, *, response_text_limit: int = 400, secret: str = "",
+) -> str:
     lines: list[str] = []
     for index, item in enumerate(iterate_exception_chain(exc), start=1):
         item_type = item.__class__.__name__
         item_message = str(item).strip()
+        if secret:
+            item_message = item_message.replace(secret, "[REDACTED]")
         lines.append(f"[{index}] {item_type}: {item_message}")
 
         response = getattr(item, "response", None)
@@ -1365,12 +1385,15 @@ def build_exception_summary(exc: BaseException, *, response_text_limit: int = 40
 
         response_text = getattr(response, "text", None)
         if isinstance(response_text, str) and response_text.strip():
+            if secret:
+                response_text = response_text.replace(secret, "[REDACTED]")
             normalized = " ".join(response_text.strip().split())
             if len(normalized) > response_text_limit:
                 normalized = normalized[:response_text_limit] + "..."
             lines.append(f"[{index}] response_body={normalized}")
 
-    return "\n".join(lines)
+    summary = "\n".join(lines)
+    return summary.replace(secret, "[REDACTED]") if secret else summary
 
 
 def is_gemini_limit_error(exc: BaseException) -> bool:
@@ -1441,13 +1464,14 @@ def fetch_available_gemini_models(gemini_api_key: str) -> set[str] | None:
         discovered: set[str] = set()
         page_token: str | None = None
         for _ in range(5):
-            params: dict[str, str | int] = {"key": gemini_api_key, "pageSize": 100}
+            params: dict[str, str | int] = {"pageSize": 100}
             if page_token:
                 params["pageToken"] = page_token
 
             response = requests.get(
                 "https://generativelanguage.googleapis.com/v1beta/models",
                 params=params,
+                headers={"x-goog-api-key": gemini_api_key},
                 timeout=15,
             )
             response.raise_for_status()
@@ -1538,75 +1562,22 @@ def translate_lines_with_gemini(
     gemini_model: str,
     _split_depth: int = 0,
 ) -> dict[str, str]:
-    import requests
-
-    indexed_lines = [f"{idx}\t{text}" for idx, text in enumerate(lines, start=1)]
-    prompt = (
-        "Translate each Japanese line into natural English.\n"
-        "Do not omit any line.\n"
-        "Preserve numbers, math symbols, and variable names as-is when possible.\n"
-        "Return JSON only with this exact schema:\n"
-        "{\"translations\":[{\"id\":1,\"text\":\"...\"}]}\n"
-        "IDs must match input IDs.\n"
-        "Input:\n"
-        + "\n".join(indexed_lines)
-    )
-
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent"
-    params = {"key": gemini_api_key}
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0,
-            "responseMimeType": "application/json",
-        },
-    }
-
     last_error: Exception | None = None
     for attempt in range(1, 6):
         try:
-            response = requests.post(url, params=params, json=payload, timeout=60)
-            response.raise_for_status()
-            data = response.json()
-
-            candidates = data.get("candidates", [])
-            if not candidates:
-                raise RuntimeError("Gemini の応答に candidates がありません")
-            content = candidates[0].get("content", {})
-            parts = content.get("parts", [])
-            if not parts:
-                raise RuntimeError("Gemini の応答に parts がありません")
-            text_payload = parts[0].get("text", "")
-            parsed = json.loads(text_payload)
-
-            items = parsed.get("translations", [])
-
-            translated_by_id: dict[int, str] = {}
-            for item in items:
-                line_id_raw = item.get("id")
-                line_id = int(line_id_raw)
-                if line_id < 1 or line_id > len(lines):
-                    raise RuntimeError("Gemini の応答 ID が不正です")
-                if line_id in translated_by_id:
-                    continue
-                translated_text = str(item.get("text", "")).strip()
-                translated_by_id[line_id] = translated_text or lines[line_id - 1]
-
-            if len(translated_by_id) != len(lines):
-                raise RuntimeError("Gemini の応答件数が入力件数と一致しません")
-
-            translated_by_line: dict[str, str] = {}
-            for line_id, source_line in enumerate(lines, start=1):
-                translated_by_line[source_line] = translated_by_id[line_id]
-
-            return translated_by_line
+            return request_translations(lines, gemini_api_key, gemini_model)
         except Exception as exc:
             last_error = exc
             print(
                 "[翻訳] "
                 f"gemini request failed: model={gemini_model}, attempt={attempt}/5"
             )
-            print("[翻訳] gemini error detail:\n" + build_exception_summary(exc))
+            print("[翻訳] gemini error detail:\n" + build_exception_summary(exc, secret=gemini_api_key))
+            if is_gemini_auth_error(exc):
+                raise RuntimeError(
+                    "Gemini APIの認証またはアクセス権限を確認してください。"
+                    "「APIキー設定」で有効なキーと環境変数を確認してください。"
+                ) from exc
             if attempt >= 5:
                 break
             sleep(1.5 * (2 ** (attempt - 1)))
@@ -1672,11 +1643,13 @@ def translate_with_gemini(source_text: str, gemini_api_key: str, gemini_model: s
                 translation_cache.update(translated_by_line)
                 print("[翻訳] gemini one-shot success")
             except Exception as exc:
+                if is_gemini_auth_error(exc):
+                    raise
                 print(
                     "[翻訳] "
                     "gemini one-shot failed; fallback to batched requests"
                 )
-                print("[翻訳] gemini one-shot error detail:\n" + build_exception_summary(exc))
+                print("[翻訳] gemini one-shot error detail:\n" + build_exception_summary(exc, secret=gemini_api_key))
                 force_batched = True
 
         if force_batched:
@@ -1766,8 +1739,10 @@ def translate_jp_srt(
                 print(
                     "[翻訳] "
                     f"gemini model failed: model={current_model}\n"
-                    + build_exception_summary(gemini_exc)
+                    + build_exception_summary(gemini_exc, secret=gemini_key)
                 )
+                if is_gemini_auth_error(gemini_exc):
+                    raise
                 if is_gemini_limit_error(gemini_exc) and model_index + 1 < len(gemini_models):
                     print(f"[翻訳] Gemini limit reached on model={current_model}; try next model")
                     continue
@@ -1848,6 +1823,8 @@ def translate_plain_lines(
                 break
             except Exception as gemini_exc:
                 gemini_last_exc = gemini_exc
+                if is_gemini_auth_error(gemini_exc):
+                    raise
                 if is_gemini_limit_error(gemini_exc):
                     continue
                 raise

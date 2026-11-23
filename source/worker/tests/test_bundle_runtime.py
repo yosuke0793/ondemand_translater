@@ -21,7 +21,11 @@ from media_license import validate_ffmpeg_license
 from credential_store import CredentialError, CredentialStore, SERVICE_NAME
 from lecture_poc.security import redact_secrets
 from local_job_manager import LocalJobManager
-from standalone_app import StandaloneApp, TTS_BACKENDS, PIPER_VOICE_OPTIONS, VOICE_OPTIONS, load_preferences
+from standalone_app import (
+    StandaloneApp, TTS_BACKENDS, PIPER_VOICE_OPTIONS, VOICE_OPTIONS,
+    load_preferences, test_gemini_connection,
+)
+from lecture_poc.gemini import DEFAULT_GEMINI_MODEL, request_translations
 
 
 class MemoryBackend:
@@ -36,6 +40,85 @@ class MemoryBackend:
 
     def delete_password(self, service: str, username: str) -> None:
         del self.values[service, username]
+
+
+class GeminiConnectionTests(unittest.TestCase):
+    def test_request_uses_worker_payload_and_header_and_validates_reply(self) -> None:
+        response = Mock()
+        response.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": json.dumps({
+                "translations": [{"id": 1, "text": "Hello"}],
+            })}]}}],
+        }
+        post = Mock(return_value=response)
+        with patch.dict(sys.modules, {"requests": SimpleNamespace(post=post)}):
+            self.assertEqual(request_translations(["こんにちは"], "secret", DEFAULT_GEMINI_MODEL),
+                             {"こんにちは": "Hello"})
+            _, kwargs = post.call_args
+            self.assertEqual(kwargs["headers"], {"x-goog-api-key": "secret"})
+            self.assertNotIn("params", kwargs)
+            self.assertIn("1\tこんにちは", kwargs["json"]["contents"][0]["parts"][0]["text"])
+            response.json.return_value["candidates"][0]["content"]["parts"][0]["text"] = (
+                '{"translations":[{"id":1,"text":""}]}'
+            )
+            with self.assertRaisesRegex(RuntimeError, "翻訳結果が空"):
+                request_translations(["こんにちは"], "secret", DEFAULT_GEMINI_MODEL, require_text=True)
+
+    def test_probe_reports_status_without_exposing_exception_or_key(self) -> None:
+        with patch("standalone_app.request_translations", return_value={"こんにちは": "Hello"}) as request:
+            self.assertTrue(test_gemini_connection("secret")[0])
+            request.assert_called_once_with(
+                ["こんにちは"], "secret", DEFAULT_GEMINI_MODEL, timeout=20, require_text=True,
+            )
+        for status in (401, 403, 429, 500, None):
+            error = RuntimeError("secret")
+            error.response = SimpleNamespace(status_code=status)
+            with self.subTest(status=status), patch("standalone_app.request_translations", side_effect=error):
+                success, detail = test_gemini_connection("secret")
+                self.assertFalse(success)
+                self.assertNotIn("secret", detail)
+                if status:
+                    self.assertIn(str(status), detail)
+
+    def test_gui_tests_effective_key_and_requires_unsaved_input_to_be_resolved(self) -> None:
+        app = Mock()
+        store = CredentialStore(MemoryBackend())
+        store.save_key("gemini", "saved-key")
+        app.credentials = store
+        gemini_entry, azure_entry, region_entry = Mock(), Mock(), Mock()
+        gemini_entry.get.return_value = "unsaved-key"
+        window = Mock()
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "env-key"}), \
+                patch("standalone_app.tk.Toplevel", return_value=window), \
+                patch("standalone_app.tk.StringVar"), \
+                patch("standalone_app.ttk.Label"), patch("standalone_app.ttk.Checkbutton"), \
+                patch("standalone_app.ttk.Entry", side_effect=[gemini_entry, azure_entry, region_entry]), \
+                patch("standalone_app.ttk.Button") as buttons, \
+                patch("standalone_app.messagebox.showinfo") as info, \
+                patch("standalone_app.messagebox.showerror") as error, \
+                patch("standalone_app.test_gemini_connection", return_value=(True, "ok")) as probe, \
+                patch("standalone_app.threading.Thread") as thread:
+            thread.side_effect = lambda **kwargs: SimpleNamespace(start=kwargs["target"])
+            StandaloneApp.configure_api_keys(app)
+            callback = next(call.kwargs["command"] for call in buttons.call_args_list
+                            if call.kwargs["text"] == "Gemini接続テスト")
+            callback()
+            probe.assert_not_called()
+            info.assert_called_once()
+            gemini_entry.get.return_value = ""
+            callback()
+            probe.assert_called_once_with("env-key")
+            window.after.call_args.args[1]()
+            self.assertEqual(info.call_args.args[1], "ok")
+            with patch.dict(os.environ, {"GEMINI_API_KEY": ""}):
+                callback()
+                probe.assert_called_with("saved-key")
+                window.after.call_args.args[1]()
+                store.delete_key("gemini")
+                probe.reset_mock()
+                callback()
+                probe.assert_not_called()
+                error.assert_called_once()
 
 
 class JobLogWindowTests(unittest.TestCase):

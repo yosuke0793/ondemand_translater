@@ -188,6 +188,7 @@ def bundle_self_test(role: str, report_path: Path | None = None) -> int:
                 raise FileNotFoundError(f"Missing bundled resource: {name}")
         if role == "gui":
             importlib.import_module("tkinter")
+            importlib.import_module("requests")
             usage_terms_text()
             worker_command()
             from credential_store import secure_backend

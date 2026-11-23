@@ -45,6 +45,39 @@ class ScratchTest(unittest.TestCase):
 
 
 class SettingsTests(unittest.TestCase):
+    def test_gemini_auth_failure_stops_retries_and_batch_fallback(self) -> None:
+        source = "1\n00:00:00,000 --> 00:00:01,000\nこんにちは\n"
+        for status, reason in ((401, ""), (403, ""), (400, "API_KEY_INVALID")):
+            response = Mock(status_code=status, text="secret-key")
+            response.json.return_value = {"error": {"details": [{"reason": reason}]}}
+            error = RuntimeError("secret-key")
+            error.response = response
+            with self.subTest(status=status), \
+                    patch.object(pipeline, "request_translations", side_effect=error) as request, \
+                    patch.object(pipeline, "sleep") as sleep, \
+                    patch("sys.stdout", new_callable=io.StringIO) as output:
+                with self.assertRaisesRegex(RuntimeError, "認証またはアクセス権限"):
+                    pipeline.translate_with_gemini(source, "secret-key", "test-model")
+                request.assert_called_once()
+                sleep.assert_not_called()
+                self.assertNotIn("secret-key", output.getvalue())
+
+    def test_gemini_auth_error_never_falls_back_to_other_models_or_argos(self) -> None:
+        response = Mock(status_code=403, text="quota exceeded")
+        error = RuntimeError("quota exceeded")
+        error.response = response
+        source = "1\n00:00:00,000 --> 00:00:01,000\nこんにちは\n"
+        with patch.object(pipeline, "get_gemini_api_key", return_value="key"), \
+                patch.object(pipeline, "resolve_gemini_model_candidates", return_value=["first", "second"]), \
+                patch.object(pipeline, "request_translations", side_effect=error) as request, \
+                patch.object(pipeline, "translate_with_argos") as argos, \
+                patch.object(Path, "read_text", return_value=source), \
+                patch("sys.stdout", new_callable=io.StringIO):
+            with self.assertRaisesRegex(RuntimeError, "認証またはアクセス権限"):
+                pipeline.translate_jp_srt(Path("jp"), Path("en"), True, "gemini", None, "first")
+            request.assert_called_once()
+            argos.assert_not_called()
+
     def test_gemini_invalid_json_response_retries_smaller_batches(self) -> None:
         class Response:
             def __init__(self, text: str):

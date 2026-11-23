@@ -6,6 +6,7 @@ import platform
 import sys
 from pathlib import Path
 
+from .gemini import DEFAULT_GEMINI_MODEL
 from .pipeline import PipelineConfig, PipelineStepError, run_pipeline
 from .security import redact_secrets
 from .tts import TTSError, validate_tts_settings
@@ -140,7 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--gemini-model",
-        default="gemini-3.1-flash-lite",
+        default=DEFAULT_GEMINI_MODEL,
         help="--translation-backend gemini のときに使うモデル名",
     )
     parser.add_argument("--burn-subs", action="store_true", help="英語字幕を焼き込んだ final_sub.mp4 も作成します")
