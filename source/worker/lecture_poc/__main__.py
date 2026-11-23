@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--tts-timing-mode",
         choices=("strict", "no-overlap"),
         default="no-overlap",
-        help="音声配置モード。no-overlap は必要に応じて後続字幕を遅らせて重なりを回避",
+        help="音声配置モード。no-overlap は開始時刻を固定し超過音声だけ最大2倍速に圧縮（収まらなければ停止）",
     )
     parser.add_argument(
         "--tts-backend",
