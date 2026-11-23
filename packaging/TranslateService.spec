@@ -55,12 +55,14 @@ gui_exe = EXE(
     name="TranslateService", debug=False, bootloader_ignore_signals=False,
     strip=False, upx=False,
     console=False,
+    manifest=str(ROOT / "packaging" / "windows.manifest") if not IS_MAC else None,
     version=str(WORK / "generated" / "windows-version.txt") if not IS_MAC else None,
 )
 worker_exe = EXE(
     PYZ(worker.pure), worker.scripts, [], exclude_binaries=True,
     name="TranslateWorker", debug=False, bootloader_ignore_signals=False,
     strip=False, upx=False, console=True,
+    manifest=str(ROOT / "packaging" / "windows.manifest") if not IS_MAC else None,
     version=str(WORK / "generated" / "windows-version.txt") if not IS_MAC else None,
 )
 # COLLECT merges both dependency sets; no source tree, data directory or venv is copied.

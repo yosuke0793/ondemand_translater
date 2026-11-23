@@ -19,6 +19,7 @@ from types import ModuleType
 from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import Mock, patch
+from xml.etree import ElementTree
 
 PACKAGING = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PACKAGING))
@@ -31,6 +32,47 @@ import app_runtime
 
 
 class PackagingTests(unittest.TestCase):
+    def test_windows_manifest_enables_utf8_without_elevation(self):
+        manifest_path = PACKAGING / "windows.manifest"
+        manifest = ElementTree.parse(manifest_path).getroot()
+        namespaces = {
+            "asm": "urn:schemas-microsoft-com:asm.v3",
+            "settings": "http://schemas.microsoft.com/SMI/2019/WindowsSettings",
+        }
+        code_page = manifest.find(
+            "asm:application/asm:windowsSettings/settings:activeCodePage", namespaces,
+        )
+        self.assertIsNotNone(code_page)
+        self.assertEqual(code_page.text, "UTF-8")
+        level = manifest.find(
+            "asm:trustInfo/asm:security/asm:requestedPrivileges/asm:requestedExecutionLevel",
+            namespaces,
+        )
+        self.assertEqual(level.attrib["level"], "asInvoker")
+        self.assertIn("packaging/windows.manifest", piper_source.application_source_files())
+        installer = (PACKAGING / "installer.iss").read_text()
+        self.assertIn("PrivilegesRequired=lowest", installer)
+        self.assertIn("DefaultDirName={localappdata}\\Programs\\TranslateService", installer)
+        self.assertIn("MinVersion=10.0.18362", installer)
+
+    def test_both_windows_executables_embed_utf8_manifest(self):
+        spec = ast.parse((PACKAGING / "TranslateService.spec").read_text())
+        executables = [
+            node for node in ast.walk(spec)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "EXE"
+        ]
+        self.assertEqual(len(executables), 2)
+        for executable in executables:
+            manifest = next(keyword.value for keyword in executable.keywords if keyword.arg == "manifest")
+            expression = compile(ast.Expression(manifest), "manifest", "eval")
+            for is_mac in (True, False):
+                with self.subTest(is_mac=is_mac):
+                    self.assertEqual(
+                        eval(expression, {"ROOT": PACKAGING.parent, "IS_MAC": is_mac}),
+                        None if is_mac else str(PACKAGING / "windows.manifest"),
+                    )
+
     def test_managed_pyav_download_reuses_verified_retry_and_cache(self):
         import urllib.error
         import ffmpeg_source
@@ -883,6 +925,42 @@ cmake() {
         self.assertIs(captured.exception, error)
         self.assertIn("partial help", output.getvalue())
         self.assertIn("UnicodeEncodeError", output.getvalue())
+
+    def test_windows_packaging_cli_logs_unicode_paths_to_legacy_streams(self):
+        stdout_bytes = io.BytesIO()
+        stderr_bytes = io.BytesIO()
+        stdout = io.TextIOWrapper(stdout_bytes, encoding="cp1252")
+        stderr = io.TextIOWrapper(stderr_bytes, encoding="cp1252")
+        command = ["C:/installed 日本語/ffmpeg.exe", "-version"]
+        error = subprocess.CalledProcessError(
+            1, command, output="日本語 stdout", stderr="日本語 stderr",
+        )
+        with patch.object(sys, "platform", "win32"), \
+                patch.object(sys, "argv", ["build.py", "validate"]), \
+                patch.object(sys, "stdout", stdout), patch.object(sys, "stderr", stderr), \
+                patch.object(build, "version", return_value="1.2.3"), \
+                patch.object(build, "verify_source_hygiene"), \
+                patch.object(build.subprocess, "run", side_effect=error):
+            build.main()
+            with self.assertRaises(subprocess.CalledProcessError):
+                build.run(command, capture_output=True, text=True)
+            stdout.flush()
+            stderr.flush()
+            self.assertEqual(stdout.encoding, "utf-8")
+            self.assertEqual(stderr.encoding, "utf-8")
+            self.assertIn(command[0], stdout_bytes.getvalue().decode("utf-8"))
+            self.assertIn(error.stderr, stderr_bytes.getvalue().decode("utf-8"))
+
+    def test_packaging_text_commands_decode_utf8_without_changing_binary_output(self):
+        for options, expected in (
+            ({"text": True}, {"text": True, "encoding": "utf-8"}),
+            ({"universal_newlines": True}, {"universal_newlines": True, "encoding": "utf-8"}),
+            ({"text": True, "encoding": "ascii"}, {"text": True, "encoding": "ascii"}),
+            ({}, {}),
+        ):
+            with self.subTest(options=options), patch.object(build.subprocess, "run") as run:
+                build.run(["ffmpeg", "-version"], **options)
+                run.assert_called_once_with(["ffmpeg", "-version"], check=True, **expected)
 
     def test_version_and_tag_validation(self):
         self.assertEqual(build.version("v" + build.version()), build.version())

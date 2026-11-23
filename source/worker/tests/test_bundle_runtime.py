@@ -740,14 +740,29 @@ class BundleRuntimeTests(unittest.TestCase):
                     patch.object(app_runtime, "executable_directory", return_value=root), \
                     patch.object(app_runtime, "resource_root", return_value=root), \
                     patch.object(app_runtime, "configure_tls_trust"), \
+                    patch.object(app_runtime, "_check_windows_utf8") as encoding_check, \
                     patch.object(sys, "platform", "win32"), patch.dict(os.environ, {
                         "PATH": "/system", "ESPEAK_DATA_PATH": "/stale/build/path",
                     }):
                 app_runtime.configure_runtime()
+                encoding_check.assert_called_once_with()
                 self.assertEqual(os.environ["ESPEAK_DATA_PATH"], str(espeak_data))
                 (espeak_data / "phontab").unlink()
                 with self.assertRaisesRegex(FileNotFoundError, "phontab"):
                     app_runtime.configure_runtime()
+
+    def test_windows_runtime_requires_utf8_process_code_page(self) -> None:
+        for code_page in (65001, 932, 1252):
+            with self.subTest(code_page=code_page), patch(
+                "ctypes.WinDLL", create=True,
+            ) as library:
+                library.return_value.GetACP.return_value = code_page
+                if code_page == 65001:
+                    app_runtime._check_windows_utf8()
+                else:
+                    with self.assertRaisesRegex(RuntimeError, f"found {code_page}"):
+                        app_runtime._check_windows_utf8()
+                library.assert_called_once_with("kernel32")
 
     def test_bundle_worker_env_isolated_and_contains_tool_path(self) -> None:
         with patch.object(app_runtime, "is_bundled", return_value=True), patch.object(
