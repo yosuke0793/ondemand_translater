@@ -20,6 +20,7 @@ from local_job_manager import LocalJobManager, default_data_dir
 from app_runtime import app_version, bundle_self_test, configure_runtime, resource_root, usage_terms_text
 from credential_store import API_VARIABLES, CredentialError, CredentialStore, validate_speech_region
 from lecture_poc.gemini import DEFAULT_GEMINI_MODEL, request_translations
+from lecture_poc.security import redact_secrets
 
 
 VOICE_OPTIONS = {
@@ -49,7 +50,7 @@ CUSTOM_GLOSSARY_FILENAME = "engineering_terms_custom.csv"
 def test_gemini_connection(api_key: str) -> tuple[bool, str]:
     try:
         request_translations(
-            ["こんにちは"], api_key, DEFAULT_GEMINI_MODEL, timeout=20, require_text=True,
+            ["こんにちは"], api_key, DEFAULT_GEMINI_MODEL, timeout=20,
         )
     except Exception as exc:
         status = getattr(getattr(exc, "response", None), "status_code", None)
@@ -746,7 +747,7 @@ class StandaloneApp:
             return
         log_path = self.manager.logs_dir / f"{job_id}.log"
         try:
-            text = log_path.read_text(encoding="utf-8", errors="replace")
+            text = redact_secrets(log_path.read_text(encoding="utf-8", errors="replace"))
         except FileNotFoundError:
             messagebox.showinfo("ログなし", "ログはまだ作成されていないか、削除されています。\n" + str(log_path), parent=self.root)
             return
@@ -775,7 +776,7 @@ class StandaloneApp:
         def refresh() -> None:
             nonlocal text
             try:
-                text = log_path.read_text(encoding="utf-8", errors="replace")
+                text = redact_secrets(log_path.read_text(encoding="utf-8", errors="replace"))
             except OSError as exc:
                 messagebox.showerror("ログを更新できません", str(exc), parent=window)
                 return

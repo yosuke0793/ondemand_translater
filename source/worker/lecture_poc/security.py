@@ -1,60 +1,43 @@
 from __future__ import annotations
 
+import os
 import re
+from collections.abc import Iterable
+from urllib.parse import quote, quote_plus, unquote
 
 
-_SENSITIVE_KEY_PATTERN = re.compile(
-    r"(?i)(api[_-]?key|token|secret|password|authorization|bearer|azure_speech_key|ocp-apim-subscription-key)"
+_REDACTED = "[REDACTED]"
+_SECRET_NAMES = r"key|[\w-]*api[_-]?key|[\w-]*token|[\w-]*secret|[\w-]*password|authorization|azure_speech_key|ocp-apim-subscription-key"
+_QUERY_PARAM = re.compile(r"([?&;])([^?&=;\s]+)=([^&#;\s\"'<>]*)")
+_SECRET_FIELD = re.compile(
+    rf"""(?ix)(?<![\w-])((?:['"])?(?:{_SECRET_NAMES})(?:['"])?\s*[:=]\s*)
+    (?:\s*(?:Bearer|Basic|DeepL-Auth-Key)\s+)?
+    (?: "(?:\\.|[^"\\])*" | '(?:\\.|[^'\\])*' | \[REDACTED\] | [^\s,;)\]}}]+ )"""
 )
+_CLI_SECRET = re.compile(
+    r"""(?ix)(--(?:gemini|deepl)-api-key(?:=|\s+))(?:"[^"]*"|'[^']*'|\[REDACTED\]|\S+)"""
+)
+_AUTH_VALUE = re.compile(r"(?i)\b(Bearer|DeepL-Auth-Key)(\s+)(?!\[REDACTED\])\S+")
 
 
-def redact_secrets(value: object) -> str:
+def redact_secrets(value: object, *, secrets: Iterable[str] = ()) -> str:
     text = "" if value is None else str(value)
-    if not text:
-        return text
+    known = {*secrets, *(os.getenv(name, "") for name in (
+        "GEMINI_API_KEY", "DEEPL_API_KEY", "AZURE_SPEECH_KEY",
+    ))}
+    variants = {encoded for secret in known if secret for encoded in (
+        secret, quote(secret, safe=""), quote_plus(secret, safe=""),
+    )}
+    for secret in sorted(variants, key=len, reverse=True):
+        text = text.replace(secret, _REDACTED)
 
-    redacted = text
+    def redact_param(match: re.Match[str]) -> str:
+        separator, name, _ = match.groups()
+        if re.fullmatch(_SECRET_NAMES, unquote(name), re.IGNORECASE):
+            return f"{separator}{name}={_REDACTED}"
+        return match[0]
 
-    # Query-style credentials (e.g. ?key=..., &token=...).
-    redacted = re.sub(
-        r"(?i)([?&](?:key|api[_-]?key|token|access[_-]?token)=)([^&\s]+)",
-        r"\1[REDACTED]",
-        redacted,
-    )
-
-    # CLI args that may carry credentials.
-    redacted = re.sub(
-        r"(?i)(--(?:gemini|deepl)-api-key\s+)(\S+)",
-        r"\1[REDACTED]",
-        redacted,
-    )
-
-    # Authorization header-like values.
-    redacted = re.sub(r"(?i)(Bearer\s+)([A-Za-z0-9._\-]+)", r"\1[REDACTED]", redacted)
-    redacted = re.sub(r"(?i)(DeepL-Auth-Key\s+)(\S+)", r"\1[REDACTED]", redacted)
-    redacted = re.sub(
-        r"(?i)\b(AZURE_SPEECH_KEY|Ocp-Apim-Subscription-Key)\b\s*([=:])\s*([^\s,;\]\)\}]+)",
-        r"\1\2[REDACTED]", redacted,
-    )
-
-    # KEY=VALUE / KEY: VALUE forms.
-    redacted = re.sub(
-        r"(?i)\b([A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)\b\s*([=:])\s*([^\s,;\]\)\}]+)",
-        r"\1\2[REDACTED]",
-        redacted,
-    )
-    redacted = re.sub(
-        r"(?i)\b(api[_-]?key|token|secret|password|authorization)\b\s*([=:])\s*([^\s,;\]\)\}]+)",
-        r"\1\2[REDACTED]",
-        redacted,
-    )
-
-    if _SENSITIVE_KEY_PATTERN.search(redacted):
-        # Final pass for quoted key-value payloads: "apiKey": "..."
-        redacted = re.sub(
-            r"(?i)(\"(?:api[_-]?key|token|secret|password|authorization|azure_speech_key|ocp-apim-subscription-key)\"\s*:\s*\")(.*?)(\")",
-            r"\1[REDACTED]\3",
-            redacted,
-        )
-
-    return redacted
+    text = _QUERY_PARAM.sub(redact_param, text)
+    text = _SECRET_FIELD.sub(lambda match: match[1] + _REDACTED, text)
+    text = _CLI_SECRET.sub(lambda match: match[1] + _REDACTED, text)
+    return _AUTH_VALUE.sub(lambda match: match[1] + match[2] + _REDACTED, text)

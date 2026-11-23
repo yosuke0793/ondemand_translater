@@ -299,13 +299,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         run_pipeline(config)
     except PipelineStepError as exc:
-        print(f"[{exc.step}] {redact_secrets(exc)}", file=sys.stderr)
-        return 1
-    except FileNotFoundError as exc:
-        print(redact_secrets(exc), file=sys.stderr)
+        print(redact_secrets(f"[{exc.step}] {exc}", secrets=(args.gemini_api_key or "",)), file=sys.stderr)
         return 1
     except Exception as exc:
-        print(redact_secrets(exc), file=sys.stderr)
+        print(redact_secrets(exc, secrets=(args.gemini_api_key or "",)), file=sys.stderr)
         return 1
 
     return 0

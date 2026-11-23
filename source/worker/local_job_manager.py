@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Callable
 
 from app_runtime import is_bundled, worker_command, worker_environment
+from lecture_poc.security import redact_secrets
 
 TERMINAL_STATES = {"done", "error", "cancelled"}
 VIDEO_SUFFIXES = {".mp4", ".mkv", ".mov", ".m4v", ".avi", ".webm", ".mpeg", ".mpg"}
@@ -465,6 +466,7 @@ class LocalJobManager:
     def _execute_job(self, queue_file: Path) -> None:
         job_id = queue_file.stem
         processing_file = self.processing_dir / queue_file.name
+        job_secrets: tuple[str, ...] = ()
         try:
             queue_file.replace(processing_file)
             job = json.loads(processing_file.read_text(encoding="utf-8"))
@@ -490,9 +492,12 @@ class LocalJobManager:
             elif tts_backend == "piper":
                 environment.pop("AZURE_SPEECH_KEY", None)
                 environment.pop("AZURE_SPEECH_REGION", None)
+            job_secrets = tuple(environment.get(name, "") for name in (
+                "GEMINI_API_KEY", "DEEPL_API_KEY", "AZURE_SPEECH_KEY",
+            ))
             log_path = self.logs_dir / f"{job_id}.log"
             with log_path.open("w", encoding="utf-8") as log_file:
-                log_file.write("command: " + " ".join(command) + "\n")
+                log_file.write("command: " + redact_secrets(" ".join(command), secrets=job_secrets) + "\n")
                 log_file.flush()
                 with self._lock:
                     self._process_job_id = job_id
@@ -546,7 +551,10 @@ class LocalJobManager:
                 self._move_job_file(job_id, self.error_dir)
                 continue_processing = False
             else:
-                self._update_status(job_id, "error", completed_at=now_iso(), error_message=str(exc))
+                self._update_status(
+                    job_id, "error", completed_at=now_iso(),
+                    error_message=redact_secrets(exc, secrets=job_secrets),
+                )
                 self._move_job_file(job_id, self.error_dir)
                 continue_processing = True
             if not continue_processing:

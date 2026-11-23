@@ -44,7 +44,7 @@ class MemoryBackend:
 
 class GeminiConnectionTests(unittest.TestCase):
     def test_request_uses_worker_payload_and_header_and_validates_reply(self) -> None:
-        response = Mock()
+        response = Mock(status_code=200)
         response.json.return_value = {
             "candidates": [{"content": {"parts": [{"text": json.dumps({
                 "translations": [{"id": 1, "text": "Hello"}],
@@ -61,14 +61,14 @@ class GeminiConnectionTests(unittest.TestCase):
             response.json.return_value["candidates"][0]["content"]["parts"][0]["text"] = (
                 '{"translations":[{"id":1,"text":""}]}'
             )
-            with self.assertRaisesRegex(RuntimeError, "翻訳結果が空"):
-                request_translations(["こんにちは"], "secret", DEFAULT_GEMINI_MODEL, require_text=True)
+            with self.assertRaisesRegex(RuntimeError, "翻訳行が不足"):
+                request_translations(["こんにちは"], "secret", DEFAULT_GEMINI_MODEL)
 
     def test_probe_reports_status_without_exposing_exception_or_key(self) -> None:
         with patch("standalone_app.request_translations", return_value={"こんにちは": "Hello"}) as request:
             self.assertTrue(test_gemini_connection("secret")[0])
             request.assert_called_once_with(
-                ["こんにちは"], "secret", DEFAULT_GEMINI_MODEL, timeout=20, require_text=True,
+                ["こんにちは"], "secret", DEFAULT_GEMINI_MODEL, timeout=20,
             )
         for status in (401, 403, 429, 500, None):
             error = RuntimeError("secret")

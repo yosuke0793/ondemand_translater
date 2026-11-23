@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import requests
 
 DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
 
 
-def request_translations(
+class GeminiAlignmentError(RuntimeError):
+    pass
+
+
+def request_gemini(
     lines: list[str], api_key: str, model: str, *, timeout: int = 60,
-    require_text: bool = False,
-) -> dict[str, str]:
+) -> requests.Response:
     import requests
 
     indexed_lines = [f"{idx}\t{text}" for idx, text in enumerate(lines, start=1)]
@@ -24,7 +31,7 @@ def request_translations(
         "Input:\n"
         + "\n".join(indexed_lines)
     )
-    response = requests.post(
+    return requests.post(
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         headers={"x-goog-api-key": api_key},
         json={
@@ -32,28 +39,37 @@ def request_translations(
             "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
         },
         timeout=timeout,
+        allow_redirects=False,
     )
+
+
+def request_translations(
+    lines: list[str], api_key: str, model: str, *, timeout: int = 60,
+) -> dict[str, str]:
+    import requests
+
+    response = request_gemini(lines, api_key, model, timeout=timeout)
     response.raise_for_status()
-    data = response.json()
-    candidates = data.get("candidates", [])
-    if not candidates:
-        raise RuntimeError("Gemini の応答に candidates がありません")
-    parts = candidates[0].get("content", {}).get("parts", [])
-    if not parts:
-        raise RuntimeError("Gemini の応答に parts がありません")
-    parsed = json.loads(parts[0].get("text", ""))
+    if not 200 <= response.status_code < 300:
+        raise requests.HTTPError("Unexpected Gemini HTTP status", response=response)
+    return parse_gemini_translations(response.json(), lines)
+
+
+def parse_gemini_translations(data: dict, lines: list[str]) -> dict[str, str]:
+    try:
+        text_payload = data["candidates"][0]["content"]["parts"][0]["text"]
+        items = json.loads(text_payload)["translations"]
+    except (KeyError, IndexError, TypeError, ValueError):
+        raise GeminiAlignmentError("Gemini の応答 JSON が不正です") from None
+    if not isinstance(items, list) or len(items) != len(lines):
+        raise GeminiAlignmentError("Gemini の応答件数が入力件数と一致しません")
     translated_by_id: dict[int, str] = {}
-    for item in parsed.get("translations", []):
-        line_id = int(item.get("id"))
-        if line_id < 1 or line_id > len(lines):
-            raise RuntimeError("Gemini の応答 ID が不正です")
-        if line_id in translated_by_id:
-            continue
-        raw_text = item.get("text", "")
-        translated_text = raw_text.strip() if isinstance(raw_text, str) else ""
-        if require_text and not translated_text:
-            raise RuntimeError("Gemini の翻訳結果が空です")
-        translated_by_id[line_id] = translated_text or lines[line_id - 1]
-    if len(translated_by_id) != len(lines):
-        raise RuntimeError("Gemini の応答件数が入力件数と一致しません")
-    return {source: translated_by_id[index] for index, source in enumerate(lines, start=1)}
+    for item in items:
+        line_id = item.get("id") if isinstance(item, dict) else None
+        if type(line_id) is not int or line_id < 1 or line_id > len(lines) or line_id in translated_by_id:
+            raise GeminiAlignmentError("Gemini の応答 ID が不正です")
+        text = item.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise GeminiAlignmentError("Gemini の翻訳行が不足しています")
+        translated_by_id[line_id] = " ".join(line.strip() for line in text.splitlines() if line.strip())
+    return {line: translated_by_id[index] for index, line in enumerate(lines, start=1)}
