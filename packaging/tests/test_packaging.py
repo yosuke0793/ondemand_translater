@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import errno
 import hashlib
 import importlib.util
 import io
@@ -8,12 +9,14 @@ import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import tarfile
 import tempfile
 import threading
 import unittest
+import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from types import ModuleType
 from contextlib import redirect_stderr
@@ -867,6 +870,76 @@ cmake() {
             self.assertEqual(list(directory.iterdir()), [destination])
         finally:
             shutil.rmtree(directory)
+
+    def test_piper_model_retries_http_and_interrupted_transfer(self):
+        class InterruptedResponse(io.BytesIO):
+            def read(self, size=-1):
+                if self.tell():
+                    raise ConnectionResetError("connection reset during transfer")
+                return super().read(size)
+
+        payload = b"verified-model"
+        url = "https://example.invalid/pinned/voice.onnx"
+        busy = urllib.error.HTTPError(
+            "https://cdn.example.invalid/voice.onnx?signature=secret", 503, "Unavailable", {}, io.BytesIO(),
+        )
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(piper_model.urllib.request, "urlopen",
+                             side_effect=[busy, InterruptedResponse(b"partial"), io.BytesIO(payload)]) \
+                as request, patch.object(piper_model.time, "sleep") as sleep, \
+                redirect_stderr(io.StringIO()) as stderr:
+            destination = Path(temporary) / "voice.onnx"
+            piper_model._download_verified(url, destination, hashlib.sha256(payload).hexdigest())
+            self.assertEqual(destination.read_bytes(), payload)
+            self.assertEqual(list(destination.parent.iterdir()), [destination])
+            self.assertEqual([call.args[0] for call in request.call_args_list], [url] * 3)
+            self.assertEqual([call.args[0] for call in sleep.call_args_list], [5, 10])
+            self.assertIn("HTTP 503 from cdn.example.invalid", stderr.getvalue())
+            self.assertIn("ConnectionResetError", stderr.getvalue())
+            self.assertNotIn("signature=", stderr.getvalue())
+
+    def test_piper_model_failure_reports_network_cache_and_integrity_separately(self):
+        voice = piper_model.DEFAULT_VOICE
+        url = "https://example.invalid/pinned/voice.onnx?token=secret"
+        for error, message, attempts in (
+            (urllib.error.HTTPError(url, 404, "Not Found", {}, io.BytesIO()), "HTTP 404 .*attempt 1/3", 1),
+            (urllib.error.URLError(ssl.SSLCertVerificationError("invalid cert")),
+             "SSLCertVerificationError", 1),
+            (TimeoutError("timeout"), "TimeoutError .*attempt 3/3", 3),
+        ):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as temporary, \
+                    patch.object(piper_model.urllib.request, "urlopen", side_effect=error) as request, \
+                    patch.object(piper_model.time, "sleep") as sleep, \
+                    redirect_stderr(io.StringIO()):
+                directory = Path(temporary)
+                with self.assertRaisesRegex(piper_model.PiperModelError, message) as caught:
+                    piper_model.stage_model(directory, voice=voice)
+                self.assertNotIn("token=", str(caught.exception))
+                self.assertEqual(request.call_count, attempts)
+                self.assertEqual(sleep.call_count, attempts - 1)
+                self.assertEqual(list(directory.iterdir()), [])
+
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(piper_model.tempfile, "NamedTemporaryFile",
+                             side_effect=PermissionError(errno.EACCES, "denied")), \
+                patch.object(piper_model.urllib.request, "urlopen") as request, \
+                patch.object(piper_model.time, "sleep") as sleep:
+            with self.assertRaisesRegex(piper_model.PiperModelError,
+                                        "staging directory .*PermissionError"):
+                piper_model.stage_model(Path(temporary), voice=voice)
+            request.assert_not_called()
+            sleep.assert_not_called()
+
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(piper_model.urllib.request, "urlopen",
+                             return_value=io.BytesIO(b"wrong digest")) as request, \
+                patch.object(piper_model.time, "sleep") as sleep:
+            directory = Path(temporary)
+            with self.assertRaisesRegex(piper_model.PiperModelError, "SHA-256 mismatch"):
+                piper_model.stage_model(directory, voice=voice)
+            request.assert_called_once()
+            sleep.assert_not_called()
+            self.assertEqual(list(directory.iterdir()), [])
 
     def test_distribution_rejects_job_history_logs_and_user_settings(self):
         bundle = PACKAGING / ".work" / "unit-private-data"
