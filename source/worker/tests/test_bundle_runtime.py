@@ -90,7 +90,7 @@ class GeminiConnectionTests(unittest.TestCase):
         window = Mock()
         with patch.dict(os.environ, {"GEMINI_API_KEY": "env-key"}), \
                 patch("standalone_app.tk.Toplevel", return_value=window), \
-                patch("standalone_app.tk.StringVar"), \
+                patch("standalone_app.tk.StringVar") as variables, \
                 patch("standalone_app.ttk.Label"), patch("standalone_app.ttk.Checkbutton"), \
                 patch("standalone_app.ttk.Entry", side_effect=[gemini_entry, azure_entry, region_entry]), \
                 patch("standalone_app.ttk.Button") as buttons, \
@@ -107,14 +107,19 @@ class GeminiConnectionTests(unittest.TestCase):
             info.assert_called_once()
             gemini_entry.get.return_value = ""
             callback()
-            probe.assert_called_once_with("env-key")
+            probe.assert_called_once_with("saved-key")
             window.after.call_args.args[1]()
             self.assertEqual(info.call_args.args[1], "ok")
+            variables.return_value.set.assert_any_call(
+                "保存済み（値は表示しません）／OSの保存先を使用中／環境変数は不使用"
+            )
+            variables.return_value.set.assert_any_call("テスト中（OSの保存先のキー）...")
+            store.delete_key("gemini")
+            callback()
+            probe.assert_called_with("env-key")
+            window.after.call_args.args[1]()
+            variables.return_value.set.assert_any_call("テスト中（環境変数のキー）...")
             with patch.dict(os.environ, {"GEMINI_API_KEY": ""}):
-                callback()
-                probe.assert_called_with("saved-key")
-                window.after.call_args.args[1]()
-                store.delete_key("gemini")
                 probe.reset_mock()
                 callback()
                 probe.assert_not_called()
@@ -362,12 +367,24 @@ class CredentialStoreTests(unittest.TestCase):
         self.store.delete_key("gemini")
         self.assertIsNone(self.store.saved_key("gemini"))
 
-    def test_environment_is_explicitly_prioritized(self) -> None:
-        self.store.save_key("gemini", "saved-secret")
-        with patch.dict(os.environ, {"GEMINI_API_KEY": " environment-secret "}):
-            self.assertEqual(self.store.effective_key("gemini"), "environment-secret")
-        with patch.dict(os.environ, {"GEMINI_API_KEY": ""}):
-            self.assertEqual(self.store.effective_key("gemini"), "saved-secret")
+    def test_saved_keys_take_priority_and_environment_is_used_only_when_unsaved(self) -> None:
+        for provider, variable in (("gemini", "GEMINI_API_KEY"), ("azure", "AZURE_SPEECH_KEY")):
+            with self.subTest(provider=provider), patch.dict(os.environ, {variable: " environment-secret "}):
+                self.store.save_key(provider, "saved-secret")
+                self.assertEqual(self.store.resolve_key(provider), ("saved-secret", "OSの保存先"))
+                self.assertEqual(self.store.effective_key(provider), "saved-secret")
+                self.store.delete_key(provider)
+                self.assertEqual(self.store.resolve_key(provider), ("environment-secret", "環境変数"))
+                self.assertEqual(self.store.effective_key(provider), "environment-secret")
+                with patch.dict(os.environ, {variable: ""}):
+                    self.assertEqual(self.store.resolve_key(provider), (None, "未設定"))
+
+    def test_unreadable_store_does_not_silently_use_environment_credentials(self) -> None:
+        backend = Mock()
+        backend.get_password.side_effect = OSError("secret")
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "environment-secret"}):
+            with self.assertRaisesRegex(CredentialError, "読み取れません"):
+                CredentialStore(backend).worker_credentials("gemini")
 
     def test_blank_multiline_and_unknown_provider_rejected(self) -> None:
         for value in ("", " ", "secret\nvalue", "secret\rvalue"):
@@ -416,7 +433,7 @@ class CredentialStoreTests(unittest.TestCase):
             })
         with patch.dict(os.environ, {"AZURE_SPEECH_KEY": "env-speech", "AZURE_SPEECH_REGION": "westus"}):
             self.assertEqual(self.store.speech_credentials("azure", "japaneast"), {
-                "AZURE_SPEECH_KEY": "env-speech", "AZURE_SPEECH_REGION": "westus",
+                "AZURE_SPEECH_KEY": "speech-secret", "AZURE_SPEECH_REGION": "westus",
             })
         for backend in ("edge-tts", "xtts-v2"):
             with self.assertRaises(ValueError):
@@ -494,7 +511,7 @@ class CredentialStoreTests(unittest.TestCase):
                 root / "data", command_builder=command, credential_provider=store.worker_credentials
             )
             job_id = manager.register_job(source, output_directory=root / "exports")
-            with patch.dict(os.environ, {"GEMINI_API_KEY": "", "DEEPL_API_KEY": "unrelated-secret"}):
+            with patch.dict(os.environ, {"GEMINI_API_KEY": "stale-environment-secret", "DEEPL_API_KEY": "unrelated-secret"}):
                 manager._run_job(manager.queue_dir / f"{job_id}.json")
             self.assertEqual(manager.get_job(job_id)["status"], "done")
             for path in manager.data_dir.rglob("*"):

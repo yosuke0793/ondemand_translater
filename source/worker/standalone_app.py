@@ -508,7 +508,7 @@ class StandaloneApp:
             window,
             text="APIキーはWindowsの資格情報マネージャー／macOSのキーチェーンに保存します。\n"
             "通常の設定ファイル・ジョブ・ログには保存しません。\n"
-            "環境変数にキーがある場合は環境変数が優先されます。\n"
+            "保存済みキーを優先し、未保存の場合だけ環境変数のキーを使用します。\n"
             "Gemini選択時はGoogleへ翻訳テキスト、Azure選択時はMicrosoftへ英語字幕を送信します。\n"
             "接続テストは固定の短い文章をGoogleへ送信し、利用料金が発生する場合があります。\n"
             "Piperの音声生成にはAPIキー不要です。料金・利用条件を確認してください。",
@@ -522,14 +522,17 @@ class StandaloneApp:
 
         def refresh_status(provider: str) -> None:
             try:
-                saved = self.credentials.saved_key(provider)
+                _, source = self.credentials.resolve_key(provider)
             except CredentialError as exc:
                 statuses[provider].set("保存先にアクセスできません")
                 messagebox.showerror("APIキー設定", str(exc), parent=window)
                 return
-            status = "保存済み（値は表示しません）" if saved else "未保存"
+            status = (
+                "保存済み（値は表示しません）／OSの保存先を使用中"
+                if source == "OSの保存先" else "未保存"
+            )
             if os.environ.get(API_VARIABLES[provider], "").strip():
-                status += "／環境変数を使用中"
+                status += "／環境変数は不使用" if source == "OSの保存先" else "／環境変数を使用中"
             statuses[provider].set(status)
 
         def save(provider: str) -> None:
@@ -582,11 +585,12 @@ class StandaloneApp:
                 )
                 return
             try:
-                api_key = self.credentials.worker_credentials("gemini")["GEMINI_API_KEY"]
+                api_key, source = self.credentials.resolve_key("gemini")
+                if not api_key:
+                    raise CredentialError("翻訳用APIキーが未設定です。「APIキー設定」で登録してから再度テストしてください。")
             except CredentialError as exc:
                 messagebox.showerror("Gemini接続テスト", str(exc), parent=window)
                 return
-            source = "環境変数" if os.environ.get("GEMINI_API_KEY", "").strip() else "OSの保存先"
             test_button.configure(state=tk.DISABLED)
             test_status.set(f"テスト中（{source}のキー）...")
 

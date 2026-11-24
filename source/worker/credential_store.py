@@ -80,9 +80,17 @@ class CredentialStore:
             raise CredentialError("OSのAPIキー保存先を読み取れません。アクセス許可を確認してください。") from exc
 
     def effective_key(self, provider: str) -> str | None:
+        return self.resolve_key(provider)[0]
+
+    def resolve_key(self, provider: str) -> tuple[str | None, str]:
         variable = self._variable(provider)
+        saved = self.saved_key(provider)
+        if saved:
+            return saved, "OSの保存先"
         environment_key = os.environ.get(variable, "").strip()
-        return environment_key or self.saved_key(provider)
+        if environment_key:
+            return environment_key, "環境変数"
+        return None, "未設定"
 
     def save_key(self, provider: str, value: str) -> None:
         username = self._variable(provider)
