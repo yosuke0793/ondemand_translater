@@ -74,6 +74,42 @@ class GeminiTests(unittest.TestCase):
         self.assertIn("/b:generateContent", self.post.call_args.args[0])
         self.sleep.assert_not_called()
 
+    def test_read_timeout_splits_even_after_alignment_split(self):
+        timeout = requests.ReadTimeout("read timed out")
+        self.post.side_effect = [
+            translations((1, "incomplete")),
+            timeout, timeout, timeout,
+            translations((1, "First")), translations((1, "Second")),
+            translations((1, "Third"), (2, "Fourth")),
+        ]
+        result = pipeline.translate_lines_with_gemini(
+            ["first", "second", "third", "fourth"], FIXTURE_KEY, "model",
+        )
+        self.assertEqual(result, {
+            "first": "First", "second": "Second", "third": "Third", "fourth": "Fourth",
+        })
+        self.assertEqual(self.input_batches(), [
+            "1\tfirst\n2\tsecond\n3\tthird\n4\tfourth",
+            "1\tfirst\n2\tsecond", "1\tfirst\n2\tsecond", "1\tfirst\n2\tsecond",
+            "1\tfirst", "1\tsecond", "1\tthird\n2\tfourth",
+        ])
+        self.assertIn("読み取りタイムアウト", self.output.getvalue())
+
+    def test_timeout_splitting_is_bounded_and_keeps_completed_translations(self):
+        self.post.side_effect = [
+            *[requests.ReadTimeout("timeout") for _ in range(3)],
+            translations((1, "First"), (2, "Second")),
+            *[requests.ReadTimeout("timeout") for _ in range(3)],
+        ]
+        cache = {}
+        with self.assertRaises(pipeline.GeminiRequestError) as raised:
+            pipeline.translate_lines_with_gemini(
+                ["first", "second", "third", "fourth"], FIXTURE_KEY, "model", cache=cache,
+            )
+        self.assertEqual(cache, {"first": "First", "second": "Second"})
+        self.assertTrue(raised.exception.retryable)
+        self.assertEqual(self.post.call_count, 7)
+
     def test_duplicate_invalid_ids_and_empty_text_never_pass(self):
         for invalid in (
             translations((1, "First"), (1, "Wrong")),

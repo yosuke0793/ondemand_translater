@@ -1593,11 +1593,31 @@ def translate_lines_with_gemini(
     _split_depth: int = 0,
     *,
     cache: dict[str, str] | None = None,
+    _timeout_split_depth: int = 0,
 ) -> dict[str, str]:
     import requests
 
     if cache is None:
         cache = {}
+
+    def split_batch(detail: str, *, timeout: bool = False) -> dict[str, str]:
+        midpoint = len(lines) // 2
+        left, right = lines[:midpoint], lines[midpoint:]
+        print(
+            "[翻訳] "
+            f"gemini split retry: depth={_split_depth}, size={len(lines)} -> "
+            f"{len(left)} + {len(right)} ({detail})"
+        )
+        translated_left = translate_lines_with_gemini(
+            left, gemini_api_key, gemini_model, _split_depth=_split_depth + 1,
+            cache=cache, _timeout_split_depth=_timeout_split_depth + int(timeout),
+        )
+        translated_right = translate_lines_with_gemini(
+            right, gemini_api_key, gemini_model, _split_depth=_split_depth + 1,
+            cache=cache, _timeout_split_depth=_timeout_split_depth + int(timeout),
+        )
+        return translated_left | translated_right
+
     for attempt in range(1, GEMINI_REQUEST_ATTEMPTS + 1):
         response = None
         try:
@@ -1622,11 +1642,14 @@ def translate_lines_with_gemini(
                 status=status,
                 retryable=retryable,
             )
+            read_timeout = status is None and isinstance(exc, requests.ReadTimeout)
             retry_after = error_response.headers.get("Retry-After") if error_response is not None else None
         else:
             break
         delay = gemini_retry_delay(attempt, retry_after)
         if not retryable or attempt == GEMINI_REQUEST_ATTEMPTS or delay > GEMINI_MAX_RETRY_DELAY:
+            if read_timeout and len(lines) >= 2 and _timeout_split_depth < 1:
+                return split_batch("読み取りタイムアウト", timeout=True)
             # Raise outside the handler so the raw requests exception is not chained.
             raise last_error
         print(
@@ -1644,30 +1667,7 @@ def translate_lines_with_gemini(
         return translated
 
     if len(lines) >= 2:
-        midpoint = len(lines) // 2
-        left = lines[:midpoint]
-        right = lines[midpoint:]
-        print(
-            "[翻訳] "
-            f"gemini split retry: depth={_split_depth}, size={len(lines)} -> "
-            f"{len(left)} + {len(right)} ({detail})"
-        )
-
-        translated_left = translate_lines_with_gemini(
-            left,
-            gemini_api_key,
-            gemini_model,
-            _split_depth=_split_depth + 1,
-            cache=cache,
-        )
-        translated_right = translate_lines_with_gemini(
-            right,
-            gemini_api_key,
-            gemini_model,
-            _split_depth=_split_depth + 1,
-            cache=cache,
-        )
-        return translated_left | translated_right
+        return split_batch(detail)
     raise GeminiAlignmentError(detail)
 
 
