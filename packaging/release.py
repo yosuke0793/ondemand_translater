@@ -16,7 +16,7 @@ from build import ARTIFACTS, PACKAGING, sha256, validate_ffmpeg_license, version
 from piper_source import application_source_files
 from piper_model import model_metadata
 
-TARGETS = ("windows-x64", "macos-arm64", "macos-x64")
+TARGETS = ("windows-x64", "macos-arm64")
 
 
 def _sha256_stream(stream) -> str:

@@ -1834,7 +1834,7 @@ cmake() {
                     "".join(f"{build.sha256(path)}  {path.name}\n" for path in paths)
                 )
             with patch.object(release, "ARTIFACTS", directory), patch.object(release, "PACKAGING", inputs):
-                self.assertEqual(len(release.validate_assets("v" + value)), 19)
+                self.assertEqual(len(release.validate_assets("v" + value)), 13)
                 source_info = directory / f"TranslateService-{value}-windows-x64-build-info.json"
                 original = json.loads(source_info.read_text())
                 changed = {**original, "ffmpeg": {**original["ffmpeg"], "nonfree": True}}
@@ -1861,6 +1861,9 @@ cmake() {
                     release.validate_assets("v" + value)
         finally:
             shutil.rmtree(directory)
+
+    def test_release_targets_match_current_automatic_build_matrix(self):
+        self.assertEqual(release.TARGETS, ("windows-x64", "macos-arm64"))
 
 
 if __name__ == "__main__":

@@ -11,14 +11,12 @@ an activated venv. This is not a claim that an unsigned build is production-read
 | --- | --- | --- |
 | Windows x64 | `windows-2022`, Python 3.12.10 x64 | per-user Inno Setup `.exe`, portable `.zip` |
 | macOS Apple Silicon | `macos-15`, Python 3.12.10 arm64 | `.dmg` |
-| macOS Intel | `macos-15-intel`, Python 3.12.10 x64 | `.dmg` |
 
-These are explicit currently supported hosted-runner labels, not moving `latest`
-aliases. Intel is a separate native build, not Rosetta or a universal2 package.
-Retest the matrix when GitHub retires a runner. Building on macOS 15 does not
-certify compatibility with earlier macOS releases; the supported minimum OS must
-be established by clean-machine testing. Windows ARM/Linux are not distribution
-targets.
+These are explicit currently used hosted-runner labels, not moving `latest`
+aliases. macOS Intel is not built or included in automatic draft releases.
+Building on macOS 15 does not certify compatibility with earlier macOS releases;
+the supported minimum OS must be established by clean-machine testing. Windows
+ARM/Linux are not distribution targets.
 
 ## Local build
 
@@ -500,7 +498,6 @@ Successful output under ignored `packaging/artifacts/` uses names such as:
 TranslateService-0.1.0-windows-x64-setup.exe
 TranslateService-0.1.0-windows-x64-portable.zip
 TranslateService-0.1.0-macos-arm64.dmg
-TranslateService-0.1.0-macos-x64.dmg
 TranslateService-0.1.0-<target>-build-info.json
 TranslateService-0.1.0-<target>-ffmpeg-source.tar.gz
 TranslateService-0.1.0-<target>-pyav-source.tar.gz
