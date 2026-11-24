@@ -15,7 +15,10 @@ from pathlib import Path
 from time import perf_counter, sleep
 
 from .ffmpeg_filters import escape_filter_value
-from .gemini import DEFAULT_GEMINI_MODEL, GeminiAlignmentError, parse_gemini_translations, request_gemini
+from .gemini import (
+    DEFAULT_GEMINI_MODEL, GeminiAlignmentError, gemini_api_key_auth,
+    parse_gemini_translations, request_gemini,
+)
 from .jp_cleaner import clean_jp_srt
 from .security import redact_secrets
 from .srt_utils import (
@@ -1499,6 +1502,7 @@ def fetch_available_gemini_models(gemini_api_key: str) -> set[str] | None:
                 "https://generativelanguage.googleapis.com/v1beta/models",
                 params=params,
                 headers={"x-goog-api-key": gemini_api_key},
+                auth=gemini_api_key_auth,
                 allow_redirects=False,
                 timeout=15,
             )

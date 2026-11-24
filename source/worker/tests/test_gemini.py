@@ -144,6 +144,32 @@ class GeminiTests(unittest.TestCase):
         self.assertEqual(get.call_args.kwargs["headers"], {"x-goog-api-key": FIXTURE_KEY})
         self.assertFalse(get.call_args.kwargs["allow_redirects"])
 
+    def test_netrc_credentials_are_not_sent_for_translation_or_model_discovery(self):
+        from lecture_poc.gemini import request_translations
+
+        session = requests.Session()
+        self.addCleanup(session.close)
+        replies = [
+            translations((1, "First")),
+            response(payload={"models": [
+                {"name": "models/gemini-fixture", "supportedGenerationMethods": ["generateContent"]},
+            ]}),
+        ]
+        with patch("requests.sessions.get_netrc_auth", return_value=("user", "password")), \
+                patch.object(session, "send", side_effect=replies) as send, \
+                patch("requests.post", side_effect=session.post), \
+                patch("requests.get", side_effect=session.get), \
+                patch.object(pipeline, "_GEMINI_AVAILABLE_MODELS_CACHE", None), \
+                patch.dict("os.environ", {"GEMINI_DISCOVER_MODELS": "true"}):
+            self.assertEqual(request_translations(["first"], FIXTURE_KEY, "model"), {"first": "First"})
+            self.assertEqual(pipeline.fetch_available_gemini_models(FIXTURE_KEY), {"gemini-fixture"})
+        for call in send.call_args_list:
+            prepared = call.args[0]
+            self.assertEqual(prepared.headers["x-goog-api-key"], FIXTURE_KEY)
+            self.assertNotIn("Authorization", prepared.headers)
+            self.assertNotIn(FIXTURE_KEY, prepared.url)
+        self.assertTrue(session.trust_env)
+
     def test_legacy_http_error_and_header_redaction(self):
         failed = response(503)
         failed.url += "?%6bey=query-fixture&alt=json"

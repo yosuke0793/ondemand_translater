@@ -15,6 +15,11 @@ class GeminiAlignmentError(RuntimeError):
     pass
 
 
+def gemini_api_key_auth(request: requests.PreparedRequest) -> requests.PreparedRequest:
+    # Explicit auth prevents Requests from adding unrelated .netrc Basic credentials.
+    return request
+
+
 def request_gemini(
     lines: list[str], api_key: str, model: str, *, timeout: int = 60,
 ) -> requests.Response:
@@ -34,6 +39,7 @@ def request_gemini(
     return requests.post(
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         headers={"x-goog-api-key": api_key},
+        auth=gemini_api_key_auth,
         json={
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
