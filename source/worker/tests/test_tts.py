@@ -416,25 +416,53 @@ class TimingTests(unittest.TestCase):
             ):
                 pipeline.build_tts_time_slots(entries, list(starts), 2.4)
 
+    def test_mux_extends_last_video_frame_for_trailing_narration(self) -> None:
+        video, audio, output = Path("input.mp4"), Path("audio.mp3"), Path("final.mp4")
+        with patch.object(pipeline, "get_media_duration_seconds", side_effect=[2.0, 2.5]), \
+                patch.object(pipeline, "build_burn_subtitles_video_encode_args",
+                             return_value=["-c:v", "libx264"]), \
+                patch.object(pipeline, "run_command") as run:
+            pipeline.mux_final_video(video, audio, output, True)
+        command = run.call_args.args[0]
+        self.assertIn("tpad=stop_mode=clone:stop_duration=0.500000", command)
+        self.assertIn("libx264", command)
+        self.assertNotIn("copy", command)
+        self.assertIn("-shortest", command)
+
+    def test_mux_stream_copies_video_when_audio_does_not_overrun(self) -> None:
+        with patch.object(pipeline, "get_media_duration_seconds", side_effect=[2.0, 2.04]), \
+                patch.object(pipeline, "run_command") as run:
+            pipeline.mux_final_video(Path("input.mp4"), Path("audio.mp3"), Path("final.mp4"), True)
+        command = run.call_args.args[0]
+        self.assertIn("copy", command)
+        self.assertNotIn("tpad=stop_mode=clone", command)
+
     def test_short_final_subtitle_is_not_extended_past_video_end(self) -> None:
         text = "1\n00:00:00,950 --> 00:00:01,000\nEnd\n"
         result = pipeline.build_aligned_srt_text(text, extract_srt_entries(text), [950], [0.05])
         self.assertEqual(extract_srt_entries(result)[0].end_seconds, 1.0)
 
-    def test_excessive_tempo_is_rejected_without_processing(self) -> None:
-        with patch.object(pipeline, "run_command") as run, self.assertRaisesRegex(
-            pipeline.PipelineStepError, r"字幕 #7:.*必要倍率=2.500000.*上限=2.0",
+    def test_required_tempo_above_cap_is_capped_and_reported_for_shift(self) -> None:
+        with patch.object(pipeline, "run_command") as run, patch.object(
+            pipeline, "get_media_duration_seconds", return_value=0.625,
         ):
-            pipeline.fit_tts_segment(Path("original.wav"), Path("fitted.wav"), 2.5, 1.0, 7)
-        run.assert_not_called()
+            result = pipeline.fit_tts_segment(Path("original.wav"), Path("fitted.wav"), 10.0, 1.0, 7)
+        self.assertEqual(result, (0.625, 4.0))
+        self.assertIn("atempo=2.000000000000,atempo=2.000000000000", run.call_args.args[0])
+
+    def test_atempo_filter_chains_factors_above_two(self) -> None:
+        self.assertEqual(
+            pipeline.build_atempo_filter(3.2),
+            "atempo=2.000000000000,atempo=1.600000000000",
+        )
 
     def test_exact_limit_is_allowed_and_measured_length_is_checked(self) -> None:
         with patch.object(pipeline, "run_command") as run, patch.object(
             pipeline, "get_media_duration_seconds", return_value=1.0,
         ):
-            result = pipeline.fit_tts_segment(Path("original.wav"), Path("fitted.wav"), 2.0, 1.0, 1)
-        self.assertEqual(result, (1.0, 2.0))
-        self.assertIn("atempo=2.000000000000", run.call_args.args[0])
+            result = pipeline.fit_tts_segment(Path("original.wav"), Path("fitted.wav"), 4.0, 1.0, 1)
+        self.assertEqual(result, (1.0, 4.0))
+        self.assertIn("atempo=2.000000000000,atempo=2.000000000000", run.call_args.args[0])
 
     def test_atempo_duration_correction_is_bounded_and_never_trims(self) -> None:
         source, target = Path("original.wav"), Path("fitted.wav")
@@ -444,7 +472,7 @@ class TimingTests(unittest.TestCase):
             duration, tempo = pipeline.fit_tts_segment(source, target, 1.25, 1.0, 1)
         self.assertEqual(duration, 0.999)
         self.assertGreater(tempo, 1.25)
-        self.assertLessEqual(tempo, 2.0)
+        self.assertLessEqual(tempo, 4.0)
         self.assertEqual(run.call_count, 2)
         for call in run.call_args_list:
             command = call.args[0]
@@ -453,15 +481,15 @@ class TimingTests(unittest.TestCase):
 
         with patch.object(pipeline, "run_command") as run, patch.object(
             pipeline, "get_media_duration_seconds", return_value=1.1,
-        ), self.assertRaisesRegex(pipeline.PipelineStepError, "実測音声長が収まりません"):
-            pipeline.fit_tts_segment(source, target, 1.25, 1.0, 1)
+        ):
+            duration, tempo = pipeline.fit_tts_segment(source, target, 1.25, 1.0, 1)
         self.assertGreater(run.call_count, 3)
-        self.assertLessEqual(run.call_count, 11)
-        self.assertIn("atempo=2.000000000000", run.call_args.args[0])
-        self.assertTrue(all(
-            float(call.args[0][call.args[0].index("-af") + 1].split("=")[1]) <= 2.0
-            for call in run.call_args_list
-        ))
+        self.assertLessEqual(run.call_count, 15)
+        self.assertEqual((duration, tempo), (1.1, 4.0))
+        self.assertIn("atempo=2.000000000000,atempo=2.000000000000", run.call_args.args[0])
+        for call in run.call_args_list:
+            filters = call.args[0][call.args[0].index("-af") + 1].split(",")
+            self.assertTrue(all(float(item.split("=")[1]) <= 2.0 for item in filters))
 
     def test_atempo_plateau_can_continue_past_three_attempts(self) -> None:
         with patch.object(pipeline, "run_command") as run, patch.object(
@@ -479,15 +507,16 @@ class TimingTests(unittest.TestCase):
             and "-t" not in call.args[0] for call in run.call_args_list
         ))
 
-    def test_persistent_tiny_overrun_reaches_cap_with_bounded_attempts(self) -> None:
+    def test_persistent_tiny_overrun_reaches_cap_and_returns_for_shift(self) -> None:
         with patch.object(pipeline, "run_command") as run, patch.object(
             pipeline, "get_media_duration_seconds", return_value=1.000001,
-        ), self.assertRaisesRegex(
-            pipeline.PipelineStepError, "最終倍率=2.000000、最終音声長=1.000001s",
         ):
-            pipeline.fit_tts_segment(Path("original.wav"), Path("fitted.wav"), 1.000001, 1.0, 1)
-        self.assertLessEqual(run.call_count, 11)
-        self.assertIn("atempo=2.000000000000", run.call_args.args[0])
+            duration, tempo = pipeline.fit_tts_segment(
+                Path("original.wav"), Path("fitted.wav"), 1.000001, 1.0, 1,
+            )
+        self.assertLessEqual(run.call_count, 15)
+        self.assertEqual((duration, tempo), (1.000001, 4.0))
+        self.assertIn("atempo=2.000000000000,atempo=2.000000000000", run.call_args.args[0])
 
     def test_invalid_compressed_duration_is_rejected(self) -> None:
         for duration in (0, float("nan"), float("inf")):
@@ -504,6 +533,92 @@ class TimingTests(unittest.TestCase):
 
 
 class PipelineTimingTests(ScratchTest):
+    def test_over_limit_audio_shifts_following_segments_without_ffmpeg(self) -> None:
+        source = self.directory / "en.srt"
+        source.write_text(
+            SOURCE_SRT.replace("00:00:00,800", "00:00:00,200"), encoding="utf-8",
+        )
+        video = self.directory / "input.mp4"
+        video.touch()
+        output = self.directory / "audio.mp3"
+        aligned = self.directory / "aligned.srt"
+        mixes = []
+
+        def capture_mix(paths, target, duration, **kwargs):
+            mixes.append((kwargs.get("start_times_ms"), duration))
+            target.write_bytes(b"audio")
+
+        backend = Mock()
+        backend.synthesize.side_effect = lambda text, target: target.write_bytes(b"wav")
+        with patch.object(pipeline, "create_backend", return_value=backend), patch.object(
+            pipeline, "get_media_duration_seconds",
+            side_effect=lambda path: 4.0 if path == video else 1.0,
+        ), patch.object(
+            pipeline, "fit_tts_segment", return_value=(0.25, 4.0),
+        ) as fit, patch.object(pipeline, "_run_tts_mix_layer", side_effect=capture_mix):
+            pipeline.generate_tts_mp3_from_segments(
+                source, video, output, 1, "no-overlap", "original", aligned,
+                lambda text, target, text_file: backend.synthesize(text, target),
+            )
+        self.assertEqual(fit.call_count, 1)
+        self.assertEqual(mixes[0], ([0, 250, 1400], 4.0))
+        self.assertEqual(
+            [entry.start_seconds for entry in extract_srt_entries(aligned.read_text(encoding="utf-8"))],
+            [0.0, 0.25, 1.4],
+        )
+        self.assertTrue(output.exists())
+
+    def test_pipeline_uses_shifted_subtitles_even_in_original_sync_mode(self) -> None:
+        video = self.directory / "input.mp4"
+        video.touch()
+        aligned = self.directory / "en_aligned.srt"
+        names = (
+            "extract_audio", "transcribe_audio", "clean_jp_srt", "translate_jp_srt",
+            "write_en_txt", "generate_en_mp3", "mux_final_video", "burn_subtitles", "embed_subtitles",
+        )
+        stages = {name: Mock() for name in names}
+
+        def generate_audio(*args):
+            aligned.write_text("shifted timings", encoding="utf-8")
+            return True
+
+        stages["generate_en_mp3"].side_effect = generate_audio
+        config = pipeline.PipelineConfig(
+            video, self.directory, burn_subs=True, subs_sync_mode="original",
+        )
+        with patch.multiple(pipeline, **stages), patch.object(
+            pipeline, "ensure_ffmpeg",
+        ), patch.object(pipeline, "PIPELINE_LOG_PATH", None):
+            pipeline.run_pipeline(config)
+        self.assertEqual(stages["burn_subtitles"].call_args.args[1], aligned)
+
+    def test_trailing_audio_extends_mixer_duration_and_aligned_subtitle(self) -> None:
+        source = self.directory / "last.srt"
+        source.write_text("1\n00:00:01,800 --> 00:00:02,000\nEnd\n", encoding="utf-8")
+        video = self.directory / "input.mp4"
+        video.touch()
+        output = self.directory / "audio.mp3"
+        aligned = self.directory / "aligned.srt"
+        mix_durations = []
+
+        def capture_mix(paths, target, duration, **kwargs):
+            mix_durations.append(duration)
+            target.write_bytes(b"audio")
+
+        backend = Mock()
+        backend.synthesize.side_effect = lambda text, target: target.write_bytes(b"wav")
+        with patch.object(pipeline, "get_media_duration_seconds",
+                          side_effect=lambda path: 2.0 if path == video else 1.0), \
+                patch.object(pipeline, "fit_tts_segment", return_value=(0.25, 4.0)), \
+                patch.object(pipeline, "_run_tts_mix_layer", side_effect=capture_mix):
+            pipeline.generate_tts_mp3_from_segments(
+                source, video, output, 1, "no-overlap", "original", aligned,
+                lambda text, target, text_file: backend.synthesize(text, target),
+            )
+        self.assertEqual(mix_durations, [2.05, 2.05])
+        entry = extract_srt_entries(aligned.read_text(encoding="utf-8"))[0]
+        self.assertEqual(entry.end_seconds, 2.05)
+
     def test_regenerated_audio_refreshes_existing_videos(self) -> None:
         video = self.directory / "input.mp4"
         video.touch()
@@ -552,7 +667,7 @@ class AudioIntegrationTests(ScratchTest):
         self.assertLessEqual(fitted_duration, 11.0)
         self.assertEqual(pipeline.get_media_duration_seconds(target), fitted_duration)
         self.assertGreaterEqual(tempo, duration / 11.0)
-        self.assertLessEqual(tempo, 2.0)
+        self.assertLessEqual(tempo, 4.0)
 
     def test_shared_mixer_alignment_volume_workers_and_cache(self) -> None:
         source = self.directory / "en.srt"
@@ -635,7 +750,7 @@ class AudioIntegrationTests(ScratchTest):
         self.assertIn('"voice": "en_US-john-medium"', metadata)
 
         old_metadata = json.loads(metadata)
-        old_metadata["tts_pipeline_version"] = "2"
+        old_metadata["tts_pipeline_version"] = "3"
         (self.directory / "audio-+100%.mp3.meta.json").write_text(json.dumps(old_metadata))
         backend.reset_mock()
         with patch.object(pipeline, "create_backend", return_value=backend):
@@ -645,9 +760,9 @@ class AudioIntegrationTests(ScratchTest):
             )
         self.assertEqual(backend.synthesize.call_count, 2)
 
-    def test_last_segment_is_compressed_before_video_end(self) -> None:
+    def test_last_segment_extends_audio_past_video_end_when_needed(self) -> None:
         source = self.directory / "last.srt"
-        source.write_text("1\n00:00:01,200 --> 00:00:02,000\nEnd\n", encoding="utf-8")
+        source.write_text("1\n00:00:01,800 --> 00:00:02,000\nEnd\n", encoding="utf-8")
         video = self.directory / "video.wav"
         video.write_bytes(wav_bytes(2.0, 0))
         output = self.directory / "last.mp3"
@@ -660,49 +775,56 @@ class AudioIntegrationTests(ScratchTest):
                 "no-overlap", "piper", "tts-aligned", aligned,
             )
         entry = extract_srt_entries(aligned.read_text(encoding="utf-8"))[0]
-        self.assertEqual(entry.start_seconds, 1.2)
-        self.assertLessEqual(entry.end_seconds, 2.0)
-        self.assertGreater(entry.end_seconds, 1.95)
+        self.assertEqual(entry.start_seconds, 1.8)
+        self.assertGreater(entry.end_seconds, 2.0)
+        self.assertGreaterEqual(pipeline.get_media_duration_seconds(output), entry.end_seconds)
         backend.synthesize.assert_called_once()
 
-    def test_fitting_failure_preserves_previous_outputs_and_cleans_scratch(self) -> None:
+    def test_over_limit_segment_shifts_following_audio_and_subtitles(self) -> None:
         source = self.directory / "en.srt"
+        source.write_text(
+            SOURCE_SRT.replace("00:00:00,800", "00:00:00,200"), encoding="utf-8",
+        )
         video = self.directory / "input.wav"
         video.write_bytes(wav_bytes(4.0, 0))
         output = self.directory / "audio.mp3"
         aligned = self.directory / "aligned.srt"
         backend = Mock()
         backend.synthesize.side_effect = lambda text, target: target.write_bytes(wav_bytes(1.0))
-        for excessive in (True, False):
-            source.write_text(
-                SOURCE_SRT.replace("00:00:00,800", "00:00:00,200") if excessive else SOURCE_SRT,
-                encoding="utf-8",
+        with patch.object(pipeline, "create_backend", return_value=backend):
+            pipeline.generate_en_mp3(
+                source, source, video, output, None, "+0%", False, 2,
+                "no-overlap", "piper", "tts-aligned", aligned,
             )
-            output.write_bytes(b"previous audio")
-            aligned.write_text("previous subtitles", encoding="utf-8")
-            with self.subTest(excessive=excessive), patch.object(
-                pipeline, "create_backend", return_value=backend,
-            ):
-                if excessive:
-                    with self.assertRaisesRegex(pipeline.PipelineStepError, r"字幕 #1:.*必要倍率=5.000000"):
-                        pipeline.generate_en_mp3(
-                            source, source, video, output, None, "+0%", False, 2,
-                            "no-overlap", "piper", "tts-aligned", aligned,
-                        )
-                else:
-                    with patch.object(
-                        pipeline, "fit_tts_segment", side_effect=pipeline.PipelineStepError(
-                            "generate_en_mp3", "compression failed",
-                        ),
-                    ), self.assertRaisesRegex(pipeline.PipelineStepError, "compression failed"):
-                        pipeline.generate_en_mp3(
-                            source, source, video, output, None, "+0%", False, 2,
-                            "no-overlap", "piper", "tts-aligned", aligned,
-                        )
-                self.assertEqual(output.read_bytes(), b"previous audio")
-                self.assertEqual(aligned.read_text(encoding="utf-8"), "previous subtitles")
-                self.assertFalse((self.directory / ".tts_segments").exists())
-                self.assertFalse((self.directory / "audio.mp3.meta.json").exists())
+        aligned_entries = extract_srt_entries(aligned.read_text(encoding="utf-8"))
+        self.assertEqual([entry.start_seconds for entry in aligned_entries], [0.0, 0.25, 1.4])
+        self.assertTrue(output.exists())
+        self.assertFalse((self.directory / ".tts_segments").exists())
+
+    def test_fitting_failure_preserves_previous_outputs_and_cleans_scratch(self) -> None:
+        source = self.directory / "en.srt"
+        source.write_text(SOURCE_SRT, encoding="utf-8")
+        video = self.directory / "input.wav"
+        video.write_bytes(wav_bytes(4.0, 0))
+        output = self.directory / "audio.mp3"
+        aligned = self.directory / "aligned.srt"
+        output.write_bytes(b"previous audio")
+        aligned.write_text("previous subtitles", encoding="utf-8")
+        backend = Mock()
+        backend.synthesize.side_effect = lambda text, target: target.write_bytes(wav_bytes(1.0))
+        with patch.object(pipeline, "create_backend", return_value=backend), patch.object(
+            pipeline, "fit_tts_segment", side_effect=pipeline.PipelineStepError(
+                "generate_en_mp3", "compression failed",
+            ),
+        ), self.assertRaisesRegex(pipeline.PipelineStepError, "compression failed"):
+            pipeline.generate_en_mp3(
+                source, source, video, output, None, "+0%", False, 2,
+                "no-overlap", "piper", "tts-aligned", aligned,
+            )
+        self.assertEqual(output.read_bytes(), b"previous audio")
+        self.assertEqual(aligned.read_text(encoding="utf-8"), "previous subtitles")
+        self.assertFalse((self.directory / ".tts_segments").exists())
+        self.assertFalse((self.directory / "audio.mp3.meta.json").exists())
 
     def test_invalid_slots_fail_before_synthesis(self) -> None:
         source = self.directory / "invalid.srt"
